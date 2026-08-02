@@ -31,6 +31,7 @@ markers = [
     "milestone3: multi-state kinematics vs golden",
     "milestone4: element results vs golden",
     "milestone5: CLI + pyradioss end-to-end",
+    "milestone7: fix round M7 (N1-N4 defects, M1/M7/M8 remedies)",
     "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
     "pyradioss: needs the pyradioss package (auto-skipped otherwise)",
     "slow: long-running",

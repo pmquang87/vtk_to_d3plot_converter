@@ -19,7 +19,10 @@ class VtkState:
 
 
 def _read_tokens(
-    lines: Iterator[str], count: int, initial_tokens: list[str] | None = None, filepath: str | None = None
+    lines: Iterator[str],
+    count: int,
+    initial_tokens: list[str] | None = None,
+    filepath: str | None = None,
 ) -> list[str]:
     """Read exactly `count` whitespace-separated tokens from the line iterator."""
     tokens = initial_tokens.copy() if initial_tokens else []
@@ -36,30 +39,41 @@ def _read_tokens(
 
 
 def _read_numeric_block(
-    lines: Iterator[str], count: int, dtype, filepath: str | None = None, initial_tokens: list[str] | None = None
+    lines: Iterator[str],
+    count: int,
+    dtype,
+    filepath: str | None = None,
+    initial_tokens: list[str] | None = None,
 ) -> np.ndarray:
-    """Read exactly `count` tokens directly into a numpy array."""
-    collected_lines = []
-    num_tokens = 0
-    if initial_tokens:
-        collected_lines.append(" ".join(initial_tokens))
-        num_tokens += len(initial_tokens)
-        
-    while num_tokens < count:
+    """Read exactly `count` tokens and convert to a numpy array.
+
+    Uses str.split() + np.array() for speed (benchmarked faster than
+    np.fromstring(sep=...) which is NumPy's deprecated slow text parser).
+    """
+    tokens = list(initial_tokens) if initial_tokens else []
+    while len(tokens) < count:
         try:
             line = next(lines)
-            collected_lines.append(line)
-            num_tokens += len(line.split())
+            tokens.extend(line.split())
         except StopIteration:
             break
-            
-    if num_tokens < count:
+    if len(tokens) < count:
         file_ctx = f" in file '{filepath}'" if filepath else ""
-        raise ValueError(f"Expected {count} tokens, got {num_tokens}{file_ctx}")
-        
-    joined = " ".join(collected_lines)
-    arr = np.fromstring(joined, dtype=dtype, sep=' ')
-    return arr[:count]
+        raise ValueError(f"Expected {count} tokens, got {len(tokens)}{file_ctx}")
+    try:
+        arr = np.array(tokens[:count], dtype=dtype)
+    except (ValueError, OverflowError) as exc:
+        # Find the first offending token for diagnostic context
+        for j, tok in enumerate(tokens[:count]):
+            try:
+                dtype(tok)
+            except (ValueError, OverflowError):
+                file_ctx = f" in file '{filepath}'" if filepath else ""
+                raise ValueError(
+                    f"Malformed numeric value {tok!r} at position {j}{file_ctx}"
+                ) from exc
+        raise  # shouldn't reach here but be safe
+    return arr
 
 
 def read_vtk(path: str | Path) -> VtkState:
@@ -175,7 +189,9 @@ def read_vtk(path: str | Path) -> VtkState:
                     initial_tokens = peek_line.split()
 
                 num_vals = current_n * ncomp
-                arr = _read_numeric_block(lines, num_vals, dtype=dtype, filepath=path, initial_tokens=initial_tokens)
+                arr = _read_numeric_block(
+                    lines, num_vals, dtype=dtype, filepath=path, initial_tokens=initial_tokens
+                )
 
                 if ncomp > 1:
                     arr = arr.reshape((current_n, ncomp))

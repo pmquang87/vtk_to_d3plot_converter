@@ -39,9 +39,7 @@ def test_tensile_vtk_only_converts(tmp_path):
 def test_pyradioss_run_and_convert(tmp_path):
     # full loop: run the Python solver on a bundled example deck, convert its VTK
     pytest.importorskip("pyradioss")
-    for f in (REPO / "tests" / "data" / "port_dialect" / "box_beam_impact").glob(
-        "BOXIMP_000*.rad"
-    ):
+    for f in (REPO / "tests" / "data" / "port_dialect" / "box_beam_impact").glob("BOXIMP_000*.rad"):
         shutil.copy(f, tmp_path)
     r1 = subprocess.run(
         [str(VENV_PY), "-m", "pyradioss.starter", "-i", "BOXIMP_0000.rad"],

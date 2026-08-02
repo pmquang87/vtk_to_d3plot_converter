@@ -7,7 +7,11 @@
 > same conversation.
 
 [x] **Milestone 6: The Review Fixes (Post-M1..5)**  
-Fix all issues flagged in the 2026-08-02 code review.
+Fix C1/C2/M2–M6 from the 2026-08-02 code review (M1/M7 deferred to M7 round).
+
+[ ] **Milestone 7: Fix Round M7 (Post-verification)**  
+Fix N1–N4 new defects, M1 minimum remedy, M7 phantom masking, M8 perf fix,
+all missing regression tests from the 2026-08-02-m6-verification.
 
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by

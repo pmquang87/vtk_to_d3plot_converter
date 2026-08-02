@@ -17,8 +17,7 @@ def _von_mises_6(s: np.ndarray) -> np.ndarray:
     """Von Mises from Voigt-6 array (..., 6) → (...)."""
     xx, yy, zz, xy, xz, yz = (s[..., i] for i in range(6))
     return np.sqrt(
-        0.5 * ((xx - yy) ** 2 + (yy - zz) ** 2 + (zz - xx) ** 2)
-        + 3.0 * (xy**2 + xz**2 + yz**2)
+        0.5 * ((xx - yy) ** 2 + (yy - zz) ** 2 + (zz - xx) ** 2) + 3.0 * (xy**2 + xz**2 + yz**2)
     )
 
 
@@ -36,8 +35,9 @@ def test_w3_shell_stress_matches_golden(tmp_path):
     from vtk2d3plot.api import convert
 
     convert(GOLDEN_W3_VTK, tmp_path / "w3.d3plot")
-    mine, gold = D3plot(str(tmp_path / "w3.d3plot")), D3plot(
-        str(GOLDEN_W3_D3 / "W3_SETUP_Ball_impact__ton-mm-s.d3plot")
+    mine, gold = (
+        D3plot(str(tmp_path / "w3.d3plot")),
+        D3plot(str(GOLDEN_W3_D3 / "W3_SETUP_Ball_impact__ton-mm-s.d3plot")),
     )
     im = np.argsort(mine.arrays[ArrayType.element_shell_ids])
     ig = np.argsort(gold.arrays[ArrayType.element_shell_ids])
@@ -48,7 +48,7 @@ def test_w3_shell_stress_matches_golden(tmp_path):
     vm_mine = _von_mises_6(sm)
     vm_gold = _von_mises_6(sg)
     scale = max(1.0, float(vm_gold.max()))
-    assert np.abs(vm_mine - vm_gold).max() / scale < 0.06
+    assert np.abs(vm_mine - vm_gold).max() / scale < 1e-4
 
 
 def test_w3_solid_stress_matches_golden(tmp_path):
@@ -58,8 +58,9 @@ def test_w3_solid_stress_matches_golden(tmp_path):
     from vtk2d3plot.api import convert
 
     convert(GOLDEN_W3_VTK, tmp_path / "w3.d3plot")
-    mine, gold = D3plot(str(tmp_path / "w3.d3plot")), D3plot(
-        str(GOLDEN_W3_D3 / "W3_SETUP_Ball_impact__ton-mm-s.d3plot")
+    mine, gold = (
+        D3plot(str(tmp_path / "w3.d3plot")),
+        D3plot(str(GOLDEN_W3_D3 / "W3_SETUP_Ball_impact__ton-mm-s.d3plot")),
     )
     im = np.argsort(mine.arrays[ArrayType.element_solid_ids])
     ig = np.argsort(gold.arrays[ArrayType.element_solid_ids])
