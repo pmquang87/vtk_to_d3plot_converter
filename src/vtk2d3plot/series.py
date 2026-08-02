@@ -88,7 +88,9 @@ def load_series(inputs: str | Path | Sequence[str | Path]) -> VtkSeries:
         if not np.array_equal(state.cell_types, state0.cell_types):
             raise TopologyError(f"cell_types mismatch in {fname}")
 
-        if not np.array_equal(state.cells, state0.cells):
+        if len(state.cells) != len(state0.cells) or not all(
+            np.array_equal(a, b) for a, b in zip(state.cells, state0.cells)
+        ):
             raise TopologyError(f"cells mismatch in {fname}")
 
         for field in ["NODE_ID", "ELEMENT_ID", "PART_ID"]:

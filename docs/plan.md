@@ -300,7 +300,7 @@ def test_geometry_loads_in_lsprepost(tmp_path):
 
 ### Milestone 3 — kinematic states ✅ criteria: `pytest -q -m milestone3` green
 
-- [ ] **M3.1 Failing tests** `tests/test_m3_states.py`:
+- [x] **M3.1 Failing tests** `tests/test_m3_states.py`:
 
 ```python
 import numpy as np, pytest
@@ -342,7 +342,7 @@ def test_zug_matches_vortex_golden(tmp_path):
         GOLDEN_ZUG_D3 / "zug_test3_RS.d3plot") < 1.0e-2
 ```
 
-- [ ] **M3.2 red → M3.3 implement → M3.4 green → M3.5 commit**
+- [x] **M3.2 red → M3.3 implement → M3.4 green → M3.5 commit**
   `feat(m3): multi-state kinematics verified against Vortex golden data`.
 
 ### Milestone 4 — element results ✅ criteria: `pytest -q -m milestone4` green incl. `lspp` fringe check
