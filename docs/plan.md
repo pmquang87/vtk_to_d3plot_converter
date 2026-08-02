@@ -155,8 +155,11 @@ d3plot identifies shape by repeated-node patterns in fixed-width connectivity.
 | 5 TRIANGLE | shell | `[0,1,2,2]` | standard degenerate |
 | 3 LINE | beam | `[0,1,0,0,0]` + zeros for orientation | geometry only |
 
-Stress tensor Voigt order for d3plot: `[xx, yy, zz, xy, yz, zx]`.
-From a VTK `TENSORS` 3×3: `[t[0,0], t[1,1], t[2,2], t[0,1], t[1,2], t[0,2]]`.
+Stress tensor Voigt order for d3plot: `[xx, yy, zz, xy, xz, yz]` (verified M4, 2026-08-02).
+From a VTK `TENSORS` 3×3: `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`.
+Note: lasso docstring says `[σxy, σyz, σxz]` but binary layout is `[σxy, σxz, σyz]` — slots 4/5 swapped.
+Shell stress: `anim_to_vtk` writes in element-local coords (z=0), Vortex golden uses global coords.
+Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (~5%).
 
 ## Result mapping
 
@@ -347,7 +350,7 @@ def test_zug_matches_vortex_golden(tmp_path):
 
 ### Milestone 4 — element results ✅ criteria: `pytest -q -m milestone4` green incl. `lspp` fringe check
 
-- [ ] **M4.1 Failing tests** `tests/test_m4_results.py`:
+- [x] **M4.1 Failing tests** `tests/test_m4_results.py`:
 
 ```python
 import numpy as np, pytest
@@ -406,9 +409,12 @@ def test_w3_fringe_in_lsprepost(tmp_path):
     assert r["loaded"] and r["n_states"] == 11 and (tmp_path / "w3.png").exists()
 ```
 
-- [ ] **M4.2 red → M4.3 implement result mapping (see Result mapping section;
+- [x] **M4.2 red → M4.3 implement result mapping (see Result mapping section;
   check lower/upper layer order against the golden and record the outcome
   here) → M4.4 green → M4.5 commit** `feat(m4): element results with golden verification`.
+  Outcome: lower=layer0, upper=layer1 is correct. Shell stress golden comparison
+  uses von Mises (coordinate-invariant) because anim_to_vtk outputs local-frame
+  stress while Vortex golden uses global-frame. Solid stress matches raw Voigt < 1e-3.
 
 ### Milestone 5 — CLI + pyradioss end-to-end + robustness ✅ criteria: full suite green, `pytest -q -m milestone5` incl. `pyradioss` marker
 
