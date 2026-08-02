@@ -418,7 +418,7 @@ def test_w3_fringe_in_lsprepost(tmp_path):
 
 ### Milestone 5 — CLI + pyradioss end-to-end + robustness ✅ criteria: full suite green, `pytest -q -m milestone5` incl. `pyradioss` marker
 
-- [ ] **M5.1 Failing tests** `tests/test_m5_end2end.py`:
+- [x] **M5.1 Failing tests** `tests/test_m5_end2end.py`:
 
 ```python
 import subprocess, sys, shutil, pytest
@@ -462,10 +462,11 @@ def test_pyradioss_run_and_convert(tmp_path):
   (If `python -m pyradioss.starter` is not runnable as a module, use the
   console scripts `.venv\Scripts\pyradioss-starter.exe` / `-engine.exe`
   instead — both are installed; prefer whichever works, record which.)
-- [ ] **M5.2 red → M5.3 implement `cli.py` (argparse: inputs, `-o/--output`,
+- [x] **M5.2 red → M5.3 implement `cli.py` (argparse: inputs, `-o/--output`,
   `--f64`, `--title`, `-q`) and robustness fixes the tests demand → M5.4 full
   suite green → M5.5** update `README.md` usage section →
-- [ ] **M5.6 Commit** `feat(m5): CLI, pyradioss end-to-end loop, robustness`.
+  pyradioss invocation: `python -m pyradioss.starter` / `.engine` works as modules.
+- [x] **M5.6 Commit** `feat(m5): CLI, pyradioss end-to-end loop, robustness`.
 
 ## Post-v1 backlog (do NOT implement now)
 

@@ -12,14 +12,39 @@ the adapter architecture proven by
 
 ## Status
 
-Greenfield. The implementation is executed milestone-by-milestone by coding
-agents in Antigravity IDE — see `docs/plan.md` (the contract),
-`docs/ANTIGRAVITY_SETUP.md` (one-time setup) and `AGENTS.md` (agent rules).
+v1 complete (Milestones 1–5). Supports both VTK dialects (official `anim_to_vtk`
+and pyradioss port), solid/shell/beam geometry, displacement, velocity, stress
+tensors, plastic strain, and element deletion flags.
 
-## Usage (target CLI, available after Milestone 5)
+## Usage
+
+### CLI
 
 ```powershell
+# Basic conversion (directory of VTK files)
 .venv\Scripts\python.exe -m vtk2d3plot.cli path\to\vtk\dir -o out\model.d3plot
+
+# Explicit file list
+.venv\Scripts\python.exe -m vtk2d3plot.cli file1.vtk file2.vtk -o out.d3plot
+
+# Options
+.venv\Scripts\python.exe -m vtk2d3plot.cli vtk_dir -o out.d3plot --f64 --title "My model" -q
+```
+
+| Flag | Description |
+|------|-------------|
+| `-o / --output` | Output d3plot path (required) |
+| `--f64` | Write 64-bit output (default: 32-bit) |
+| `--title` | Title string embedded in d3plot header |
+| `-q / --quiet` | Suppress informational output |
+
+### Python API
+
+```python
+from vtk2d3plot.api import convert
+
+report = convert("path/to/vtk/dir", "output.d3plot", title="My model")
+print(f"{report.n_states} states, {report.n_nodes} nodes")
 ```
 
 Output is a family: `model.d3plot` (geometry) + `model.d3plot01` (states) —
