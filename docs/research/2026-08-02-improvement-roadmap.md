@@ -9,20 +9,10 @@ load-bearing claims. Everything marked "verified" was demonstrated, not
 assumed. Impact is rated for THIS workflow: OpenRadioss runs → LS-PrePost
 fringes/screenshots, batch automation.
 
-## Strategic frame (critic-corrected)
-
-- OpenRadioss still has NO native d3plot writer (checked through the 2025
-  release). The community route is Vortex-Radioss (MPL-2.0, reads binary
-  ANIM A-files directly, bundled as optional GUI feature since Jan 2025).
-- Therefore: official-dialect feature work competes with Vortex, which reads
-  the richer A-file. vtk2d3plot's UNIQUE value is (1) the pyradioss
-  port-dialect path — the only route to LS-PrePost for pyradioss output —
-  and (2) fidelity/robustness Vortex lacks. Weight investments accordingly.
-- The single highest-leverage move may be UPSTREAM: pyradioss's Model holds
-  full solid Voigt stress, per-layer shell stress/epsp and beam resultants,
-  but its anim_vtk.py writer reduces everything to VONM/EPSP scalars. A
-  pyradioss writer patch emitting official-named TENSORS blocks lights up
-  this converter's existing tensor paths with zero converter changes.
+> The strategic-frame section (no native OpenRadioss d3plot writer /
+> Vortex-Radioss competition / upstream pyradioss tensor-writer patch) was
+> removed 2026-08-02: the upstream writer patch was spun off into its own
+> task in the OpenRadioss_Python repo.
 
 ## Tier 1 — high value, small effort
 
