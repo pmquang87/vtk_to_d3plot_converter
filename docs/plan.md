@@ -13,7 +13,7 @@ Fix C1/C2/M2–M6 from the 2026-08-02 code review (M1/M7 deferred to M7 round).
 Fix N1–N4 new defects, M1 minimum remedy, M7 phantom masking, M8 perf fix.
 N4 partial (3 of 6 allocation sites), CLI --title and N1-eps tests missing — completed in M8.
 
-[ ] **Milestone 8: Fix Round M8 (Post-M7-verification)**  
+[x] **Milestone 8: Fix Round M8 (Post-M7-verification)**  
 Fix P1 (remaining N4 crash sites), P1b (single-layer-only stress/eps),
 P2 (non-ASCII title), P3 (missing tests, truthful records).
 
