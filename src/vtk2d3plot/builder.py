@@ -100,6 +100,15 @@ def build_d3plot(
         _any_state_has(series, "2DELEM_Stress_(lower)")
         and _any_state_has(series, "2DELEM_Stress_(upper)")
     )
+    # --- P1b: single-layer-only stress (only upper OR only lower in entire series) ---
+    has_shell_stress_upper_only = n_shells > 0 and (
+        not has_shell_stress_2layer and _any_state_has(series, "2DELEM_Stress_(upper)")
+    )
+    has_shell_stress_lower_only = n_shells > 0 and (
+        not has_shell_stress_2layer
+        and not has_shell_stress_upper_only
+        and _any_state_has(series, "2DELEM_Stress_(lower)")
+    )
     # --- Official dialect: shell stress (membrane — single layer) (M2 fix) ---
     has_shell_stress_membrane = n_shells > 0 and (
         not has_shell_stress_2layer and _any_state_has(series, "2DELEM_Stress_(membrane)")
@@ -119,6 +128,15 @@ def build_d3plot(
         _any_state_has(series, "2DELEM_Plastic_Strain_Upper")
         and _any_state_has(series, "2DELEM_Plastic_Strain_Lower")
     )
+    # --- P1b: single-layer-only eps ---
+    has_shell_eps_upper_only = n_shells > 0 and (
+        not has_shell_eps_2layer and _any_state_has(series, "2DELEM_Plastic_Strain_Upper")
+    )
+    has_shell_eps_lower_only = n_shells > 0 and (
+        not has_shell_eps_2layer
+        and not has_shell_eps_upper_only
+        and _any_state_has(series, "2DELEM_Plastic_Strain_Lower")
+    )
     has_shell_eps_single = n_shells > 0 and _any_state_has(series, "2DELEM_Plastic_Strain")
     # --- Port: EPSP (C1 fix: removed n_shells>0 gate) ---
     has_epsp = _any_state_has(series, "EPSP")
@@ -128,7 +146,13 @@ def build_d3plot(
     # Shell stress layers count (from stress source)
     if has_shell_stress_2layer:
         stress_layers = 2
-    elif has_shell_stress_membrane or has_shell_vonmises_official or (has_vonm and n_shells > 0):
+    elif (
+        has_shell_stress_membrane
+        or has_shell_stress_upper_only
+        or has_shell_stress_lower_only
+        or has_shell_vonmises_official
+        or (has_vonm and n_shells > 0)
+    ):
         stress_layers = 1
     else:
         stress_layers = 0
@@ -136,7 +160,12 @@ def build_d3plot(
     # Shell eps layers count (from eps source)
     if has_shell_eps_2layer:
         eps_layers = 2
-    elif has_shell_eps_single or (has_epsp and n_shells > 0):
+    elif (
+        has_shell_eps_upper_only
+        or has_shell_eps_lower_only
+        or has_shell_eps_single
+        or (has_epsp and n_shells > 0)
+    ):
         eps_layers = 1
     else:
         eps_layers = 0
@@ -213,9 +242,35 @@ def build_d3plot(
                 shell_stress[i, :, 0, :] = _tensor_to_voigt(t_mem).astype(ftype)
             else:
                 shell_stress_fill.append(i)
+    elif has_shell_stress_upper_only:
+        # P1b fix: only upper layer exists — map into layer 0
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Stress_(upper) found (lower missing from all states); "
+            "mapped to layer 0, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Stress_(upper)" in state.cell_data:
+                t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
+                shell_stress[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_stress_fill.append(i)
+    elif has_shell_stress_lower_only:
+        # P1b fix: only lower layer exists — map into layer 0
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Stress_(lower) found (upper missing from all states); "
+            "mapped to layer 0, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Stress_(lower)" in state.cell_data:
+                t = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
+                shell_stress[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_stress_fill.append(i)
     elif has_shell_vonmises_official:
         # M2 fix: fallback to 2DELEM_Von_Mises as synthetic-uniaxial
-        shell_stress = np.zeros((n_states, n_shells, 1, 6), dtype=ftype)
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
         warn_list.append("shell stress tensor is synthetic-uniaxial from 2DELEM_Von_Mises")
         for i, state in enumerate(series.states):
             if "2DELEM_Von_Mises" in state.cell_data:
@@ -224,7 +279,7 @@ def build_d3plot(
             else:
                 shell_stress_fill.append(i)
     elif has_vonm and n_shells > 0:
-        shell_stress = np.zeros((n_states, n_shells, 1, 6), dtype=ftype)
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
         warn_list.append("stress tensor is synthetic-uniaxial from VONM")
         for i, state in enumerate(series.states):
             if "VONM" in state.cell_data:
@@ -277,6 +332,38 @@ def build_d3plot(
                 ].astype(ftype)
             else:
                 shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Upper"))
+    elif has_shell_eps_upper_only:
+        # P1b fix: only upper eps exists — map into layer 0
+        shell_eps = np.zeros(
+            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
+        )
+        warn_list.append(
+            "only 2DELEM_Plastic_Strain_Upper found (Lower missing from all states); "
+            "mapped to layer 0"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Plastic_Strain_Upper" in state.cell_data:
+                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append(i)
+    elif has_shell_eps_lower_only:
+        # P1b fix: only lower eps exists — map into layer 0
+        shell_eps = np.zeros(
+            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
+        )
+        warn_list.append(
+            "only 2DELEM_Plastic_Strain_Lower found (Upper missing from all states); "
+            "mapped to layer 0"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Plastic_Strain_Lower" in state.cell_data:
+                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append(i)
     elif has_shell_eps_single:
         # Replicate single scalar into both layers (official with no Upper/Lower split)
         n_layers = n_shell_layers if n_shell_layers > 0 else 1
@@ -289,10 +376,13 @@ def build_d3plot(
             else:
                 shell_eps_fill.append(i)
     elif has_epsp and n_shells > 0:
-        shell_eps = np.zeros((n_states, n_shells, 1), dtype=ftype)
+        n_layers = n_shell_layers if n_shell_layers > 0 else 1
+        shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
         for i, state in enumerate(series.states):
             if "EPSP" in state.cell_data:
-                shell_eps[i, :, 0] = state.cell_data["EPSP"][model.shell_src].astype(ftype)
+                eps_val = state.cell_data["EPSP"][model.shell_src].astype(ftype)
+                for layer in range(n_layers):
+                    shell_eps[i, :, layer] = eps_val
             else:
                 shell_eps_fill.append(i)
 
@@ -381,7 +471,7 @@ def build_d3plot(
             )
 
     # M7: phantom cell masking warning
-    if hasattr(model, "n_phantom_masked") and model.n_phantom_masked > 0:
+    if model.n_phantom_masked > 0:
         warn_list.append(
             f"Masked {model.n_phantom_masked} cells referencing zero-ID nodes "
             f"(phantom geometry, matching Vortex behavior)"
@@ -438,13 +528,27 @@ def build_d3plot(
         a[ArrayType.element_beam_is_alive] = beam_alive
 
     # M5 fix: set the d3plot header title
-    # N3 fix: validate/truncate to 36 chars (lasso reads 9 of 10 header words)
+    # N3/P2 fix: byte-budget truncation. Dual constraint:
+    #   (a) lasso reads back only 36 chars — truncate to 36 for readback fidelity
+    #   (b) lasso pads to 40 chars then UTF-8-encodes — padded must fit 40 bytes
+    # For pure ASCII, constraint (a) dominates (36 chars < 40 bytes).
+    # For non-ASCII, constraint (b) may dominate (multi-byte chars eat padding).
     if title:
-        if len(title) > 36:
+
+        def _padded_bytes(t: str) -> int:
+            return len(t.ljust(40).encode("utf-8"))
+
+        needs_truncation = len(title) > 36 or _padded_bytes(title) > 40
+        if needs_truncation:
+            original_title = title
+            # Enforce both constraints
+            while len(title) > 36 or _padded_bytes(title) > 40:
+                title = title[:-1]
             warn_list.append(
-                f"title truncated from {len(title)} to 36 chars (lasso reads 9 of 10 header words)"
+                f"title truncated from {len(original_title)} to {len(title)} chars "
+                f"({len(original_title.encode('utf-8'))} to {len(title.encode('utf-8'))} UTF-8 bytes) "
+                f"(d3plot header: 36 readable chars, 40 padded bytes)"
             )
-            title = title[:36]
         d3.header.title = title
 
     if f64:

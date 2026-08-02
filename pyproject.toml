@@ -32,6 +32,7 @@ markers = [
     "milestone4: element results vs golden",
     "milestone5: CLI + pyradioss end-to-end",
     "milestone7: fix round M7 (N1-N4 defects, M1/M7/M8 remedies)",
+    "milestone8: fix round M8 (P1/P1b/P2/P3 from M7 verification)",
     "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
     "pyradioss: needs the pyradioss package (auto-skipped otherwise)",
     "slow: long-running",

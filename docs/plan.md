@@ -10,8 +10,12 @@
 Fix C1/C2/M2–M6 from the 2026-08-02 code review (M1/M7 deferred to M7 round).
 
 [x] **Milestone 7: Fix Round M7 (Post-verification)**  
-Fix N1–N4 new defects, M1 minimum remedy, M7 phantom masking, M8 perf fix,
-all missing regression tests from the 2026-08-02-m6-verification.
+Fix N1–N4 new defects, M1 minimum remedy, M7 phantom masking, M8 perf fix.
+N4 partial (3 of 6 allocation sites), CLI --title and N1-eps tests missing — completed in M8.
+
+[ ] **Milestone 8: Fix Round M8 (Post-M7-verification)**  
+Fix P1 (remaining N4 crash sites), P1b (single-layer-only stress/eps),
+P2 (non-ASCII title), P3 (missing tests, truthful records).
 
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
@@ -166,7 +170,7 @@ Stress tensor Voigt order for d3plot: `[xx, yy, zz, xy, xz, yz]` (verified M4, 2
 From a VTK `TENSORS` 3×3: `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`.
 Note: lasso docstring says `[σxy, σyz, σxz]` but binary layout is `[σxy, σxz, σyz]` — slots 4/5 swapped.
 Shell stress: `anim_to_vtk` writes in element-local coords (z=0), Vortex golden uses global coords.
-Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (actual agreement is 9e-7, test tolerance is intentionally 6%).
+Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (tolerance 1e-4; von Mises is rotation-invariant so local-frame stress gives exact VM values; raw σ components differ ~50% due to element-local vs global frame).
 
 ## Result mapping
 
