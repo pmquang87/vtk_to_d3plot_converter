@@ -19,7 +19,7 @@ class VtkState:
 
 
 def _read_tokens(
-    lines: Iterator[str], count: int, initial_tokens: list[str] | None = None
+    lines: Iterator[str], count: int, initial_tokens: list[str] | None = None, filepath: str | None = None
 ) -> list[str]:
     """Read exactly `count` whitespace-separated tokens from the line iterator."""
     tokens = initial_tokens.copy() if initial_tokens else []
@@ -30,8 +30,36 @@ def _read_tokens(
         except StopIteration:
             break
     if len(tokens) < count:
-        raise ValueError(f"Expected {count} tokens, got {len(tokens)}")
+        file_ctx = f" in file '{filepath}'" if filepath else ""
+        raise ValueError(f"Expected {count} tokens, got {len(tokens)}{file_ctx}")
     return tokens[:count]
+
+
+def _read_numeric_block(
+    lines: Iterator[str], count: int, dtype, filepath: str | None = None, initial_tokens: list[str] | None = None
+) -> np.ndarray:
+    """Read exactly `count` tokens directly into a numpy array."""
+    collected_lines = []
+    num_tokens = 0
+    if initial_tokens:
+        collected_lines.append(" ".join(initial_tokens))
+        num_tokens += len(initial_tokens)
+        
+    while num_tokens < count:
+        try:
+            line = next(lines)
+            collected_lines.append(line)
+            num_tokens += len(line.split())
+        except StopIteration:
+            break
+            
+    if num_tokens < count:
+        file_ctx = f" in file '{filepath}'" if filepath else ""
+        raise ValueError(f"Expected {count} tokens, got {num_tokens}{file_ctx}")
+        
+    joined = " ".join(collected_lines)
+    arr = np.fromstring(joined, dtype=dtype, sep=' ')
+    return arr[:count]
 
 
 def read_vtk(path: str | Path) -> VtkState:
@@ -99,29 +127,28 @@ def read_vtk(path: str | Path) -> VtkState:
                     val_type = header[3]
 
                     num_vals = ncomp * ntuples
-                    vals = _read_tokens(lines, num_vals)
+                    vals = _read_tokens(lines, num_vals, filepath=path)
                     if name.upper() == "TIME" and num_vals > 0:
                         time_val = float(vals[0])
             elif cmd == "POINTS":
                 n_points = int(tokens[1])
-                vals = _read_tokens(lines, n_points * 3)
-                points = np.array(vals, dtype=np.float64).reshape((n_points, 3))
+                arr = _read_numeric_block(lines, n_points * 3, dtype=np.float64, filepath=path)
+                points = arr.reshape((n_points, 3))
             elif cmd == "CELLS":
                 n_cells = int(tokens[1])
                 size = int(tokens[2])
-                vals = _read_tokens(lines, size)
+                arr = _read_numeric_block(lines, size, dtype=np.int32, filepath=path)
 
                 # Each cell: npts idx0 idx1 ...
                 idx = 0
                 for _ in range(n_cells):
-                    npts = int(vals[idx])
-                    cell_pts = vals[idx + 1 : idx + 1 + npts]
-                    cells.append(np.array(cell_pts, dtype=np.int32))
+                    npts = arr[idx]
+                    cell_pts = arr[idx + 1 : idx + 1 + npts]
+                    cells.append(cell_pts)
                     idx += 1 + npts
             elif cmd == "CELL_TYPES":
                 n_cells = int(tokens[1])
-                vals = _read_tokens(lines, n_cells)
-                cell_types = np.array(vals, dtype=np.int32)
+                cell_types = _read_numeric_block(lines, n_cells, dtype=np.int32, filepath=path)
             elif cmd == "POINT_DATA":
                 current_n = int(tokens[1])
                 current_data_dict = point_data
@@ -148,9 +175,8 @@ def read_vtk(path: str | Path) -> VtkState:
                     initial_tokens = peek_line.split()
 
                 num_vals = current_n * ncomp
-                vals = _read_tokens(lines, num_vals, initial_tokens=initial_tokens)
+                arr = _read_numeric_block(lines, num_vals, dtype=dtype, filepath=path, initial_tokens=initial_tokens)
 
-                arr = np.array(vals, dtype=dtype)
                 if ncomp > 1:
                     arr = arr.reshape((current_n, ncomp))
                 current_data_dict[name] = arr
@@ -160,16 +186,16 @@ def read_vtk(path: str | Path) -> VtkState:
                 name = tokens[1]
                 val_type = tokens[2].lower()
                 dtype = np.int32 if "int" in val_type else np.float64
-                vals = _read_tokens(lines, current_n * 3)
-                current_data_dict[name] = np.array(vals, dtype=dtype).reshape((current_n, 3))
+                arr = _read_numeric_block(lines, current_n * 3, dtype=dtype, filepath=path)
+                current_data_dict[name] = arr.reshape((current_n, 3))
             elif cmd == "TENSORS":
                 if current_data_dict is None:
                     continue
                 name = tokens[1]
                 val_type = tokens[2].lower()
                 dtype = np.int32 if "int" in val_type else np.float64
-                vals = _read_tokens(lines, current_n * 9)
-                current_data_dict[name] = np.array(vals, dtype=dtype).reshape((current_n, 3, 3))
+                arr = _read_numeric_block(lines, current_n * 9, dtype=dtype, filepath=path)
+                current_data_dict[name] = arr.reshape((current_n, 3, 3))
 
         return VtkState(
             path=path,

@@ -132,9 +132,26 @@ def map_topology(state0: VtkState) -> MappedModel:
 
     if "ELEMENT_ID" in state0.cell_data:
         raw_elem_ids = state0.cell_data["ELEMENT_ID"].astype(np.int32)
-        solid_ids = raw_elem_ids[solid_src] if n_solids else np.empty((0,), dtype=np.int32)
-        shell_ids = raw_elem_ids[shell_src] if n_shells else np.empty((0,), dtype=np.int32)
-        beam_ids = raw_elem_ids[beam_src] if n_beams else np.empty((0,), dtype=np.int32)
+        solid_ids = raw_elem_ids[solid_src].copy() if n_solids else np.empty((0,), dtype=np.int32)
+        if n_solids:
+            zero_mask = solid_ids == 0
+            if np.any(zero_mask):
+                max_id = np.max(solid_ids)
+                solid_ids[zero_mask] = np.arange(max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32)
+
+        shell_ids = raw_elem_ids[shell_src].copy() if n_shells else np.empty((0,), dtype=np.int32)
+        if n_shells:
+            zero_mask = shell_ids == 0
+            if np.any(zero_mask):
+                max_id = np.max(shell_ids)
+                shell_ids[zero_mask] = np.arange(max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32)
+
+        beam_ids = raw_elem_ids[beam_src].copy() if n_beams else np.empty((0,), dtype=np.int32)
+        if n_beams:
+            zero_mask = beam_ids == 0
+            if np.any(zero_mask):
+                max_id = np.max(beam_ids)
+                beam_ids[zero_mask] = np.arange(max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32)
     else:
         solid_ids = np.arange(1, n_solids + 1, dtype=np.int32)
         shell_ids = np.arange(n_solids + 1, n_solids + n_shells + 1, dtype=np.int32)

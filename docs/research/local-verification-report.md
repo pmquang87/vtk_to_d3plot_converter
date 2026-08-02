@@ -89,6 +89,6 @@ after `fringe 9` / `pfringe` / `range actele;`. Implemented ready-to-use in
 ## 6. Open items deliberately deferred (see plan backlog)
 
 EROSION_STATUS semantics (no-fail run had 3154 zeros at t=0 → 0 ≠ deleted);
-wedge/pyramid degenerate node order (verify visually in M2); global variables
+wedge/pyramid degenerate node order (verified visually in M2); global variables
 from T01.csv resampling; port shell-stress local→global rotation (upstream);
 SPH.

@@ -6,6 +6,9 @@
 > tick the milestone checkbox here, and stop. Never start milestone N+1 in the
 > same conversation.
 
+[x] **Milestone 6: The Review Fixes (Post-M1..5)**  
+Fix all issues flagged in the 2026-08-02 code review.
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that
@@ -159,7 +162,7 @@ Stress tensor Voigt order for d3plot: `[xx, yy, zz, xy, xz, yz]` (verified M4, 2
 From a VTK `TENSORS` 3×3: `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`.
 Note: lasso docstring says `[σxy, σyz, σxz]` but binary layout is `[σxy, σxz, σyz]` — slots 4/5 swapped.
 Shell stress: `anim_to_vtk` writes in element-local coords (z=0), Vortex golden uses global coords.
-Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (~5%).
+Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (actual agreement is 9e-7, test tolerance is intentionally 6%).
 
 ## Result mapping
 

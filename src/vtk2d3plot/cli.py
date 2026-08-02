@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from exc
 
     if not args.quiet:
-        print(f"Wrote {rep.output}")
+        print(f"Wrote {rep.output} and {rep.output}01")
         print(
             f"  {rep.n_states} states, {rep.n_nodes} nodes, "
             f"{rep.n_solids} solids, {rep.n_shells} shells, "
