@@ -9,7 +9,7 @@
 [x] **Milestone 6: The Review Fixes (Post-M1..5)**  
 Fix C1/C2/M2–M6 from the 2026-08-02 code review (M1/M7 deferred to M7 round).
 
-[ ] **Milestone 7: Fix Round M7 (Post-verification)**  
+[x] **Milestone 7: Fix Round M7 (Post-verification)**  
 Fix N1–N4 new defects, M1 minimum remedy, M7 phantom masking, M8 perf fix,
 all missing regression tests from the 2026-08-02-m6-verification.
 
