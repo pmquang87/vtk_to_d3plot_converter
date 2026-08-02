@@ -149,7 +149,7 @@ d3plot identifies shape by repeated-node patterns in fixed-width connectivity.
 |---|---|---|---|
 | 12 HEXAHEDRON | solid | `[0,1,2,3,4,5,6,7]` | verified (golden W3 solids) |
 | 10 TETRA | solid | `[0,1,2,3,3,3,3,3]` | standard LS-DYNA degenerate tetra |
-| 13 WEDGE | solid | `[0,1,4,3,2,2,5,5]` — candidate; MUST be verified in LS-PrePost render before accepting (VTK wedge = base tri 0,1,2 + top tri 3,4,5; LS-DYNA collapses hex pairs). If the render shows twisted geometry, try `[0,1,3,4,2,2,5,5]` (Gemini-sourced alternative) and keep whichever renders a clean prism. Record the winner here. | UNVERIFIED |
+| 13 WEDGE | solid | `[0,1,4,3,2,2,5,5]` | verified (M2 LS-PrePost render, 2026-08-02: clean prism, no twist) |
 | 14 PYRAMID | solid | `[0,1,2,3,4,4,4,4]` | standard |
 | 9 QUAD | shell | `[0,1,2,3]` | verified |
 | 5 TRIANGLE | shell | `[0,1,2,2]` | standard degenerate |
@@ -248,7 +248,7 @@ def test_reader_matches_meshio():
 
 ### Milestone 2 — topology mapping + geometry-only d3plot ✅ criteria: `pytest -q -m milestone2` green incl. one `lspp` test
 
-- [ ] **M2.1 Failing tests** `tests/test_m2_geometry.py`:
+- [x] **M2.1 Failing tests** `tests/test_m2_geometry.py`:
 
 ```python
 import numpy as np, pytest
@@ -289,14 +289,14 @@ def test_geometry_loads_in_lsprepost(tmp_path):
     assert r["loaded"] and r["n_states"] == 21
 ```
 
-- [ ] **M2.2 Verify failure**, **M2.3 implement** `mapping.py` (+ builder/api
+- [x] **M2.2 Verify failure**, **M2.3 implement** `mapping.py` (+ builder/api
   geometry path; states carry only timestamps + node_displacement for now).
   Use `tools/reference/make_d3plot.py` as the exact template for array
   population. **M2.4 green**, and additionally: build one synthetic VTK with a
   tetra + wedge + pyramid, convert, and render in LS-PrePost
   (`tools/lspp_check.py --png out.png`), view the PNG, and confirm clean
   (non-twisted) solids; record the verified wedge mapping in the table above.
-- [ ] **M2.5 Commit** `feat(m2): topology mapping and geometry d3plot`.
+- [x] **M2.5 Commit** `feat(m2): topology mapping and geometry d3plot`.
 
 ### Milestone 3 — kinematic states ✅ criteria: `pytest -q -m milestone3` green
 

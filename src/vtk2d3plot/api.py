@@ -1,8 +1,6 @@
 """vtk2d3plot public API — convert VTK time series to LS-DYNA d3plot.
 
-Full implementation arrives in milestone 2; this module provides the
-ConversionReport dataclass and the convert() signature so that downstream
-tests and the CLI can import them from M1 onward.
+Milestone 2: working convert() pipeline with geometry + kinematics.
 """
 
 from __future__ import annotations
@@ -52,10 +50,27 @@ def convert(
     Returns
     -------
     ConversionReport
-
-    Raises
-    ------
-    NotImplementedError
-        Until milestone 2 is implemented.
     """
-    raise NotImplementedError("convert() is implemented in milestone 2")
+    from .builder import build_d3plot
+    from .mapping import map_topology
+    from .series import load_series
+
+    series = load_series(inputs)
+    model = map_topology(series.states[0])
+    d3, warn_list = build_d3plot(series, model, title=title, f64=f64)
+
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    d3.write_d3plot(str(out))
+
+    return ConversionReport(
+        output=str(out),
+        n_states=len(series.states),
+        n_nodes=model.node_ids.shape[0],
+        n_solids=model.solid_conn.shape[0],
+        n_shells=model.shell_conn.shape[0],
+        n_beams=model.beam_conn.shape[0],
+        n_parts=model.part_ids.shape[0],
+        dialect=series.dialect,
+        warnings=warn_list,
+    )
