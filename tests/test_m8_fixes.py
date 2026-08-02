@@ -438,9 +438,10 @@ def test_p2_non_ascii_title_no_crash(tmp_path):
 
     rep = convert(PORT_DIR, tmp_path / "box.d3plot", title="Größe")
     # Must not crash (implicit: we got here)
-    # Non-ASCII chars cause padding overflow → truncation warning
-    assert any("truncat" in w.lower() for w in rep.warnings), (
-        f"Expected truncation warning for non-ASCII title; got: {rep.warnings}"
+    # M9: non-ASCII chars are now transliterated (ä→ae), so we get a transliteration warning
+    # instead of (or in addition to) a truncation warning
+    assert any("translit" in w.lower() or "truncat" in w.lower() for w in rep.warnings), (
+        f"Expected transliteration or truncation warning for non-ASCII title; got: {rep.warnings}"
     )
 
 

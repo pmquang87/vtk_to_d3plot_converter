@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -24,6 +24,8 @@ class MappedModel:
     shell_src: np.ndarray  # (n_shells,) int32
     beam_src: np.ndarray  # (n_beams,) int32
     n_phantom_masked: int = 0
+    n_skipped_cells: int = 0
+    skipped_cell_types: set = field(default_factory=set)  # set of unsupported VTK type ints
 
 
 def map_topology(state0: VtkState) -> MappedModel:
@@ -59,6 +61,8 @@ def map_topology(state0: VtkState) -> MappedModel:
     solids, shells, beams = [], [], []
     solid_src_list, shell_src_list, beam_src_list = [], [], []
     n_phantom_masked = 0
+    n_skipped = 0
+    skipped_cell_types: set[int] = set()
 
     for i, (ct, cell) in enumerate(zip(state0.cell_types, state0.cells)):
         ct = int(ct)
@@ -82,7 +86,8 @@ def map_topology(state0: VtkState) -> MappedModel:
             beams.append(conn)
             beam_src_list.append(i)
         else:
-            raise ValueError(f"Unsupported VTK cell type: {ct}")
+            n_skipped += 1
+            skipped_cell_types.add(ct)
 
     solid_conn = (
         np.array(solids, dtype=np.int32).reshape(-1, 8)
@@ -189,4 +194,6 @@ def map_topology(state0: VtkState) -> MappedModel:
         shell_src=shell_src,
         beam_src=beam_src,
         n_phantom_masked=n_phantom_masked,
+        n_skipped_cells=n_skipped,
+        skipped_cell_types=skipped_cell_types,
     )

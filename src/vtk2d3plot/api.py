@@ -31,6 +31,7 @@ def convert(
     *,
     title: str = "",
     f64: bool = False,
+    part_names: dict[int, str] | None = None,
 ) -> ConversionReport:
     """Convert a VTK time series to an LS-DYNA d3plot family.
 
@@ -57,11 +58,47 @@ def convert(
 
     series = load_series(inputs)
     model = map_topology(series.states[0])
-    d3, warn_list = build_d3plot(series, model, title=title, f64=f64)
+    d3, warn_list = build_d3plot(series, model, title=title, f64=f64, part_names=part_names)
+
+    if model.n_skipped_cells > 0:
+        types_str = ", ".join(str(t) for t in sorted(model.skipped_cell_types))
+        warn_list.insert(
+            0,
+            f"Skipped {model.n_skipped_cells} unsupported cells "
+            f"(VTK types: {types_str}); these are not included in the d3plot",
+        )
+
+    import shutil
+    import tempfile
 
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    d3.write_d3plot(str(out))
+
+    # Atomic write: write to temp, then rename on success
+    tmp_dir = out.parent
+    try:
+        with tempfile.TemporaryDirectory(dir=tmp_dir) as td:
+            tmp_base = Path(td) / "tmp.d3plot"
+            d3.write_d3plot(str(tmp_base))
+            # Move generated files (base + base01) to final location
+            # First, remove stale family members from a previous run
+            for stale in sorted(out.parent.glob(f"{out.name}[0-9][0-9]")):
+                stale.unlink()
+            if out.exists():
+                out.unlink()
+            # Move the new files
+            shutil.move(str(tmp_base), str(out))
+            tmp_states = Path(td) / "tmp.d3plot01"
+            if tmp_states.exists():
+                shutil.move(str(tmp_states), str(out.parent / f"{out.name}01"))
+    except Exception:
+        # Clean up partial output on failure
+        if out.exists():
+            out.unlink()
+        out01 = out.parent / f"{out.name}01"
+        if out01.exists():
+            out01.unlink()
+        raise
 
     return ConversionReport(
         output=str(out),

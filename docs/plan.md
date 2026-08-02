@@ -17,6 +17,13 @@ N4 partial (3 of 6 allocation sites), CLI --title and N1-eps tests missing — c
 Fix P1 (remaining N4 crash sites), P1b (single-layer-only stress/eps),
 P2 (non-ASCII title), P3 (missing tests, truthful records).
 
+[x] **Milestone 9: Fix Round M9 + Roadmap Tier-1**  
+Fix R1 (generic eps discarded when Upper exists), R2 (upper-only data slots
+into wrong layer), P2 (transliteration-based title). Roadmap Tier-1: EROSION_STATUS
+→ is_alive, unmapped-array warnings, part titles from CLI/API, SPH robustness
+(VTK_VERTEX skip), atomic writes + stale-family cleanup, CLI batch polish
+(glob expansion, default title, --part-names).
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that

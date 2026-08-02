@@ -42,12 +42,69 @@ def _any_state_has(series: VtkSeries, key: str, data_kind: str = "cell") -> bool
     return False
 
 
+# German umlaut transliteration table for d3plot ASCII-only title constraint.
+_TRANSLIT = {
+    "\u00e4": "ae",
+    "\u00f6": "oe",
+    "\u00fc": "ue",
+    "\u00df": "ss",
+    "\u00c4": "Ae",
+    "\u00d6": "Oe",
+    "\u00dc": "Ue",
+}
+
+
+def _sanitize_title(title: str, wordsize: int = 4) -> tuple[str, list[str]]:
+    """Transliterate and truncate a title for the d3plot header.
+
+    lasso 2.0.4 pads the title to 10*wordsize chars then UTF-8-encodes.
+    Non-ASCII chars produce more bytes than chars, crashing the writer.
+    We transliterate German umlauts (ae/oe/ue/ss), replace remaining
+    non-ASCII with '?', and truncate to 10*wordsize - 4 readable chars.
+
+    Returns ``(sanitized_title, list_of_warnings)``.
+    """
+    warns: list[str] = []
+
+    # Guard: bytes input
+    if isinstance(title, bytes):
+        title = title.decode("utf-8", errors="replace")
+
+    # Guard: unpaired surrogates
+    title = title.encode("utf-8", errors="replace").decode("utf-8")
+
+    # Transliterate German umlauts
+    original = title
+    for src, dst in _TRANSLIT.items():
+        title = title.replace(src, dst)
+    if title != original:
+        warns.append(f"title: transliterated non-ASCII chars ({original!r} \u2192 {title!r})")
+
+    # Replace remaining non-ASCII with '?'
+    ascii_title = title.encode("ascii", errors="replace").decode("ascii")
+    if ascii_title != title:
+        warns.append("title: replaced remaining non-ASCII chars with '?'")
+        title = ascii_title
+
+    # Truncate to readable char budget (10*wordsize - 4 per lasso read-back)
+    max_chars = 10 * wordsize - 4  # 36 for 32-bit, 76 for 64-bit
+    if len(title) > max_chars:
+        warns.append(
+            f"title truncated from {len(title)} to {max_chars} chars "
+            f"(d3plot header: {max_chars} readable chars)"
+        )
+        title = title[:max_chars]
+
+    return title, warns
+
+
 def build_d3plot(
     series: VtkSeries,
     model: MappedModel,
     *,
     title: str = "",
     f64: bool = False,
+    part_names: dict[int, str] | None = None,
 ) -> tuple[D3plot, list[str]]:
     ftype = np.float64 if f64 else np.float32
     itype = np.int64 if f64 else np.int32
@@ -130,11 +187,14 @@ def build_d3plot(
     )
     # --- P1b: single-layer-only eps ---
     has_shell_eps_upper_only = n_shells > 0 and (
-        not has_shell_eps_2layer and _any_state_has(series, "2DELEM_Plastic_Strain_Upper")
+        not has_shell_eps_2layer
+        and not _any_state_has(series, "2DELEM_Plastic_Strain")
+        and _any_state_has(series, "2DELEM_Plastic_Strain_Upper")
     )
     has_shell_eps_lower_only = n_shells > 0 and (
         not has_shell_eps_2layer
         and not has_shell_eps_upper_only
+        and not _any_state_has(series, "2DELEM_Plastic_Strain")
         and _any_state_has(series, "2DELEM_Plastic_Strain_Lower")
     )
     has_shell_eps_single = n_shells > 0 and _any_state_has(series, "2DELEM_Plastic_Strain")
@@ -142,6 +202,8 @@ def build_d3plot(
     has_epsp = _any_state_has(series, "EPSP")
     # --- Port: OFF (element alive) ---
     has_off = _any_state_has(series, "OFF")
+    # --- Official: EROSION_STATUS (1=alive, 0=eroded) ---
+    has_erosion_status = _any_state_has(series, "EROSION_STATUS")
 
     # Shell stress layers count (from stress source)
     if has_shell_stress_2layer:
@@ -243,16 +305,17 @@ def build_d3plot(
             else:
                 shell_stress_fill.append(i)
     elif has_shell_stress_upper_only:
-        # P1b fix: only upper layer exists — map into layer 0
+        # P1b fix: only upper layer exists — map into correct slot
         shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        upper_layer = min(1, n_shell_layers - 1)
         warn_list.append(
-            "only 2DELEM_Stress_(upper) found (lower missing from all states); "
-            "mapped to layer 0, element-local coordinates"
+            f"only 2DELEM_Stress_(upper) found (lower missing from all states); "
+            f"mapped to layer {upper_layer}, element-local coordinates"
         )
         for i, state in enumerate(series.states):
             if "2DELEM_Stress_(upper)" in state.cell_data:
                 t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
-                shell_stress[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                shell_stress[i, :, upper_layer, :] = _tensor_to_voigt(t).astype(ftype)
             else:
                 shell_stress_fill.append(i)
     elif has_shell_stress_lower_only:
@@ -333,17 +396,18 @@ def build_d3plot(
             else:
                 shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Upper"))
     elif has_shell_eps_upper_only:
-        # P1b fix: only upper eps exists — map into layer 0
+        # P1b fix: only upper eps exists — map into correct slot
         shell_eps = np.zeros(
             (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
         )
+        upper_eps_layer = min(1, (n_shell_layers if n_shell_layers > 0 else 1) - 1)
         warn_list.append(
-            "only 2DELEM_Plastic_Strain_Upper found (Lower missing from all states); "
-            "mapped to layer 0"
+            f"only 2DELEM_Plastic_Strain_Upper found (Lower missing from all states); "
+            f"mapped to layer {upper_eps_layer}"
         )
         for i, state in enumerate(series.states):
             if "2DELEM_Plastic_Strain_Upper" in state.cell_data:
-                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
+                shell_eps[i, :, upper_eps_layer] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
                     model.shell_src
                 ].astype(ftype)
             else:
@@ -387,7 +451,7 @@ def build_d3plot(
                 shell_eps_fill.append(i)
 
     # ================================================================
-    # === Element alive (from OFF) — M6 fix: added beam alive ===
+    # === Element alive (from OFF or EROSION_STATUS) — M6 fix: added beam alive ===
     # ================================================================
     shell_alive = None
     solid_alive = None
@@ -395,26 +459,38 @@ def build_d3plot(
     shell_alive_fill: list[int] = []
     solid_alive_fill: list[int] = []
     beam_alive_fill: list[int] = []
+
+    # Determine alive source: OFF (port dialect) or EROSION_STATUS (official dialect)
+    alive_key = None
     if has_off:
+        alive_key = "OFF"
+    elif has_erosion_status:
+        alive_key = "EROSION_STATUS"
+        warn_list.append(
+            "element is_alive from EROSION_STATUS (1=alive, 0=eroded); "
+            "deleted elements will be hidden in LS-PrePost"
+        )
+
+    if alive_key is not None:
         if n_shells > 0:
             shell_alive = np.ones((n_states, n_shells), dtype=ftype)
             for i, state in enumerate(series.states):
-                if "OFF" in state.cell_data:
-                    shell_alive[i] = state.cell_data["OFF"][model.shell_src].astype(ftype)
+                if alive_key in state.cell_data:
+                    shell_alive[i] = state.cell_data[alive_key][model.shell_src].astype(ftype)
                 else:
                     shell_alive_fill.append(i)
         if n_solids > 0:
             solid_alive = np.ones((n_states, n_solids), dtype=ftype)
             for i, state in enumerate(series.states):
-                if "OFF" in state.cell_data:
-                    solid_alive[i] = state.cell_data["OFF"][model.solid_src].astype(ftype)
+                if alive_key in state.cell_data:
+                    solid_alive[i] = state.cell_data[alive_key][model.solid_src].astype(ftype)
                 else:
                     solid_alive_fill.append(i)
         if n_beams > 0:
             beam_alive = np.ones((n_states, n_beams), dtype=ftype)
             for i, state in enumerate(series.states):
-                if "OFF" in state.cell_data:
-                    beam_alive[i] = state.cell_data["OFF"][model.beam_src].astype(ftype)
+                if alive_key in state.cell_data:
+                    beam_alive[i] = state.cell_data[alive_key][model.beam_src].astype(ftype)
                 else:
                     beam_alive_fill.append(i)
 
@@ -477,6 +553,53 @@ def build_d3plot(
             f"(phantom geometry, matching Vortex behavior)"
         )
 
+    # ================================================================
+    # M9: unmapped-array warnings
+    # ================================================================
+    _RECOGNIZED_POINT = {
+        "DISPLACEMENT",
+        "Displacement",
+        "VELOCITY",
+        "Velocity",
+        "NODE_ID",
+    }
+    _RECOGNIZED_CELL = {
+        "ELEMENT_ID",
+        "PART_ID",
+        "VONM",
+        "EPSP",
+        "OFF",
+        "EROSION_STATUS",
+        "3DELEM_Stress",
+        "3DELEM_Plastic_Strain",
+        "2DELEM_Stress_(lower)",
+        "2DELEM_Stress_(upper)",
+        "2DELEM_Stress_(membrane)",
+        "2DELEM_Plastic_Strain",
+        "2DELEM_Plastic_Strain_Upper",
+        "2DELEM_Plastic_Strain_Lower",
+        "2DELEM_Von_Mises",
+    }
+    unmapped_cell: dict[str, float] = {}
+    unmapped_point: dict[str, float] = {}
+    for state in series.states:
+        for k, v in state.cell_data.items():
+            if k not in _RECOGNIZED_CELL and k not in unmapped_cell:
+                try:
+                    unmapped_cell[k] = float(np.abs(v).max())
+                except (TypeError, ValueError):
+                    unmapped_cell[k] = 0.0
+        for k, v in state.point_data.items():
+            if k not in _RECOGNIZED_POINT and k not in unmapped_point:
+                try:
+                    unmapped_point[k] = float(np.abs(v).max())
+                except (TypeError, ValueError):
+                    unmapped_point[k] = 0.0
+    all_unmapped = {**unmapped_point, **unmapped_cell}
+    if all_unmapped:
+        items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unmapped.items()))
+        warn_list.append(f"unmapped arrays ignored: {items}")
+
     # ----------------------------------------------------------------
     # Assemble D3plot
     # ----------------------------------------------------------------
@@ -503,7 +626,19 @@ def build_d3plot(
 
     a[ArrayType.part_ids] = model.part_ids.astype(itype)
     a[ArrayType.part_titles_ids] = model.part_ids.astype(itype)
-    a[ArrayType.part_titles] = np.array([b"Part %d" % int(pid) for pid in model.part_ids])
+    if part_names:
+        titles_list = []
+        for pid in model.part_ids:
+            name = part_names.get(int(pid), f"Part {int(pid)}")
+            # Transliterate part names for ASCII safety (lasso encodes as UTF-8 bytes)
+            name_clean = name
+            for src, dst in _TRANSLIT.items():
+                name_clean = name_clean.replace(src, dst)
+            name_clean = name_clean.encode("ascii", errors="replace").decode("ascii")
+            titles_list.append(name_clean.encode("utf-8"))
+        a[ArrayType.part_titles] = np.array(titles_list)
+    else:
+        a[ArrayType.part_titles] = np.array([b"Part %d" % int(pid) for pid in model.part_ids])
 
     a[ArrayType.global_timesteps] = series.times.astype(ftype)
     a[ArrayType.node_displacement] = node_disp
@@ -528,28 +663,17 @@ def build_d3plot(
         a[ArrayType.element_beam_is_alive] = beam_alive
 
     # M5 fix: set the d3plot header title
-    # N3/P2 fix: byte-budget truncation. Dual constraint:
-    #   (a) lasso reads back only 36 chars — truncate to 36 for readback fidelity
-    #   (b) lasso pads to 40 chars then UTF-8-encodes — padded must fit 40 bytes
-    # For pure ASCII, constraint (a) dominates (36 chars < 40 bytes).
-    # For non-ASCII, constraint (b) may dominate (multi-byte chars eat padding).
+    # M9 fix: transliterate non-ASCII, then truncate to readable char budget.
+    # lasso's pack() does "{0:N}".format(title).encode("utf-8") where N=10*wordsize.
+    # Any non-ASCII char makes encoded bytes > N, crashing the writer.
+    # Solution: transliterate German umlauts, replace remaining non-ASCII with '?',
+    # then truncate to readable chars (10*wordsize - 4).
     if title:
-
-        def _padded_bytes(t: str) -> int:
-            return len(t.ljust(40).encode("utf-8"))
-
-        needs_truncation = len(title) > 36 or _padded_bytes(title) > 40
-        if needs_truncation:
-            original_title = title
-            # Enforce both constraints
-            while len(title) > 36 or _padded_bytes(title) > 40:
-                title = title[:-1]
-            warn_list.append(
-                f"title truncated from {len(original_title)} to {len(title)} chars "
-                f"({len(original_title.encode('utf-8'))} to {len(title.encode('utf-8'))} UTF-8 bytes) "
-                f"(d3plot header: 36 readable chars, 40 padded bytes)"
-            )
-        d3.header.title = title
+        wordsize_val = 8 if f64 else 4
+        title, title_warns = _sanitize_title(title, wordsize_val)
+        warn_list.extend(title_warns)
+        if title:
+            d3.header.title = title
 
     if f64:
         d3.header.wordsize = 8
