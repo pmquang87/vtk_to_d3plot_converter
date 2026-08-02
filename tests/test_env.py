@@ -6,7 +6,6 @@ do not adapt the tests.
 
 import numpy as np
 import pytest
-
 from conftest import (
     GOLDEN_W3_D3,
     GOLDEN_W3_VTK,
@@ -25,7 +24,6 @@ def test_python_and_numpy():
 
 def test_lasso_pinned():
     import lasso
-
     from lasso.dyna import ArrayType, D3plot  # noqa: F401
 
     # the pin the whole project is verified against
@@ -55,8 +53,7 @@ def test_lasso_write_readback_smoke(tmp_path):
     from lasso.dyna import ArrayType, D3plot
 
     coords = np.array(
-        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-         [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
         dtype=np.float32,
     )
     d3 = D3plot()

@@ -191,7 +191,7 @@ Kinematics (both dialects): `timestamps = series.times`;
 
 ### Milestone 1 — package skeleton + VTK reader for both dialects ✅ criteria: `pytest -q -m milestone1` green
 
-- [ ] **M1.1 Write failing tests** in `tests/test_m1_reader.py` (the red test
+- [x] **M1.1 Write failing tests** in `tests/test_m1_reader.py` (the red test
   `test_m1_contract` in the file already imports `vtk2d3plot.api` — extend it):
 
 ```python
@@ -233,8 +233,8 @@ def test_reader_matches_meshio():
     assert np.allclose(ours.points, ref.points)
 ```
 
-- [ ] **M1.2 Run to verify failure** (`ModuleNotFoundError: vtk2d3plot`).
-- [ ] **M1.3 Implement** `src/vtk2d3plot/{__init__,vtk_reader,series}.py` +
+- [x] **M1.2 Run to verify failure** (`ModuleNotFoundError: vtk2d3plot`).
+- [x] **M1.3 Implement** `src/vtk2d3plot/{__init__,vtk_reader,series}.py` +
   minimal `api.py`/`cli.py` stubs raising `NotImplementedError`, and register
   the package: it is already installed editable via `pyproject.toml` at repo
   root (`pip install -e .` was run during setup — do NOT rerun pip; if imports
@@ -243,8 +243,8 @@ def test_reader_matches_meshio():
   blank lines; `SCALARS <name> <type> [ncomp]` then `LOOKUP_TABLE` line;
   `VECTORS`/`TENSORS` have no lookup table; `FIELD FieldData n` blocks carry
   `TIME 1 1 double`. Store TENSORS as `(n, 3, 3)`.
-- [ ] **M1.4 Run until green**, including `test_env.py`.
-- [ ] **M1.5 Commit** `feat(m1): VTK reader + series loader for port and official dialects`.
+- [x] **M1.4 Run until green**, including `test_env.py`.
+- [x] **M1.5 Commit** `feat(m1): VTK reader + series loader for port and official dialects`.
 
 ### Milestone 2 — topology mapping + geometry-only d3plot ✅ criteria: `pytest -q -m milestone2` green incl. one `lspp` test
 
@@ -476,3 +476,32 @@ def test_pyradioss_run_and_convert(tmp_path):
   not docs. Shapes cross-checked against the golden d3plot read-back.
 - The wedge mapping is explicitly marked UNVERIFIED with a decision procedure.
 - pyradioss module-vs-console invocation ambiguity is called out in M5.
+
+## Design decisions (Q&A, 2026-08-02)
+
+Settled before M1 implementation. Milestones 2–5 inherit these without re-asking.
+
+1. **FIELD FieldData**: parse N entries dynamically (not hard-coded 2).
+2. **Missing arrays across states**: reader reports faithfully (no zero-fill).
+   Builder (M2/M3) zero-fills states missing an array + one report warning.
+3. **Geometry recovery**: scan states in order; `x0 = POINTS(first_state_with_DISPLACEMENT) −
+   DISPLACEMENT(that_state)`. Warn only if no state in the series has DISPLACEMENT (fall back
+   to POINTS(state0)). This is a builder-stage rule, not in the reader.
+4. **SCALARS ncomp**: reader supports ncomp > 1 `(n, ncomp)`; mapper raises if a
+   known name has unexpected ncomp. Lenient reader, strict mapper.
+5. **Line endings/BOM**: `open(path, "r", encoding="utf-8-sig", errors="replace")` —
+   universal newlines, BOM tolerance, no-crash on stray bytes.
+6. **Blank lines**: skip globally. VTK is count-driven; blank lines never semantic.
+7. **Dialect detection**: title regex `pyradioss` → "port"; FIELD TIME → "official";
+   else "unknown". Dialect is provenance metadata only — every mapping decision keys
+   on array presence, never the dialect string. Patched port files stay "port".
+8. **Topology check**: hard error on POINTS count, CELLS, CELL_TYPES, or identity
+   arrays (NODE_ID/ELEMENT_ID/PART_ID) differing. Data-array availability differences
+   → warning (not error).
+9. **File sorting**: glob `*.vtk`, group by stem, error on >1 stem, sort by numeric
+   suffix `A(\d+)`, verify monotonic time. Caller order preserved for explicit lists.
+10. **TENSORS**: read 9 tokens per cell (flexible line breaks), store `(n, 3, 3)` row-major.
+    Symmetric-tensor sanity check belongs in the mapper (M4), not the reader.
+11. **Stubs (M1)**: full signatures + ConversionReport dataclass, bodies raise
+    NotImplementedError naming the milestone. No `mapping.py`/`builder.py` in M1.
+12. **Test imports**: `from conftest import ...` pattern. No `__init__.py` in `tests/`.
