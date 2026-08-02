@@ -1,0 +1,14 @@
+.venv/
+.idea/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+# converter outputs (keep golden reference d3plots in tests/data!)
+/out/
+lspost.msg
+lspost.cfile
+*.png.tmp

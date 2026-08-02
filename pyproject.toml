@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vtk2d3plot"
+version = "0.1.0"
+description = "Convert VTK unstructured-grid time series (pyradioss / OpenRadioss anim_to_vtk) to LS-DYNA d3plot"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "lasso-python==2.0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "meshio>=5.3"]
+
+[project.scripts]
+vtk2d3plot = "vtk2d3plot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "milestone1: VTK reader + series loader",
+    "milestone2: topology mapping + geometry d3plot",
+    "milestone3: multi-state kinematics vs golden",
+    "milestone4: element results vs golden",
+    "milestone5: CLI + pyradioss end-to-end",
+    "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
+    "pyradioss: needs the pyradioss package (auto-skipped otherwise)",
+    "slow: long-running",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,9 @@
+# Pinned runtime + dev environment for .venv (Python 3.14.2).
+# Preinstalled during project setup - agents must NOT re-resolve or upgrade.
+numpy==2.5.1
+lasso-python==2.0.4
+meshio==5.3.5
+pytest==9.1.1
+ruff==0.16.1
+# pyradioss is installed editable from the sibling checkout:
+#   .venv\Scripts\pip.exe install -e ..\OpenRadioss_Python
