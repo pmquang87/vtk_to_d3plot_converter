@@ -10,11 +10,21 @@ You have two Antigravity programs installed:
 
 | App | Version | Use |
 |---|---|---|
-| Antigravity IDE (`...\Programs\Antigravity IDE\Antigravity IDE.exe`) | 2.1.1 | **Use this one.** VS Code fork, line-by-line review, debugging. |
-| Antigravity 2.0 (`...\Programs\Antigravity\Antigravity.exe`) | 2.4.3 | Agent manager for parallel worktree tasks. Not needed here. |
+| Antigravity 2.0 (`...\Programs\Antigravity\Antigravity.exe`) | 2.4.3 | **The user's choice.** Standalone agent manager. |
+| Antigravity IDE (`...\Programs\Antigravity IDE\Antigravity IDE.exe`) | 2.1.1 | VS Code fork; alternative with line-by-line diff review. |
 
-Both share the same agent harness, rules, skills and MCP config (`~/.gemini/`).
-Google's own guidance: use the IDE for "single focused coding tasks with code visibility" — exactly this project.
+Both share the same agent harness, rules, skills and MCP config (`~/.gemini/`),
+so this repo's `AGENTS.md`, `.agents/rules/`, `.agents/skills/` and
+`.agents/workflows/` work identically in either app. Notes for 2.0:
+
+- Milestones are strictly sequential (M2 needs M1) — run ONE agent at a time,
+  a new conversation per milestone. Do not fan out parallel agents on this plan.
+- If you use "New Worktree" isolation per task: the repo is git-initialized,
+  so it works — but then merge back to master after each milestone. Simpler:
+  point tasks at the main project folder and skip worktrees.
+- Code review: 2.0 reviews via artifacts (Implementation Plan / diffs /
+  Walkthrough). For line-by-line reading, open the folder in PyCharm and
+  review the git diff after each milestone before approving the next.
 
 ## What this repo already provides (do not recreate)
 
@@ -25,26 +35,27 @@ Google's own guidance: use the IDE for "single focused coding tasks with code vi
 - `tests/data/golden/` — golden reference data (same physical states as VTK and as d3plot).
 - Git repository with an initial commit. Commit after every milestone — it is your only undo.
 
-## IDE settings to change once
+## Terminal-hang mitigations (Windows)
 
-Open user settings JSON (Ctrl+Shift+P → "Open User Settings (JSON)") and add:
+Known Windows bugs on the shared harness: commands stuck on "Running…" forever
+(EOF never signalled), and the `c:\` vs `C:\` path-comparison hang (bug thread
+129882). Mitigations:
 
-```jsonc
-{
-  // Windows terminal-hang fix from the Google AI forum threads:
-  "terminal.integrated.defaultProfile.windows": "PowerShell",   // pwsh 7, NOT "Windows PowerShell"
-  "terminal.integrated.windowsEnableConpty": false
-}
-```
-
-Known Windows bugs these avoid: commands stuck on "Running…" forever (EOF never signalled),
-and the `c:\` vs `C:\` path-comparison hang (bug thread 129882).
+- Primary (works in both apps, already enforced by `AGENTS.md` and
+  `.agents/rules/env.md`): one flat command per call, no outer quotes around
+  whole commands, no `&&`/pipes/redirection, absolute `.venv\Scripts\*.exe`
+  paths, no long-running processes.
+- If a 2.0 agent terminal wedges on a command: cancel the step and have the
+  agent re-issue a flatter/simpler form — do not let it retry identically.
+- IDE only (VS Code fork), if you ever switch back: user settings JSON —
+  `"terminal.integrated.defaultProfile.windows": "PowerShell"` (pwsh 7, NOT
+  "Windows PowerShell") and `"terminal.integrated.windowsEnableConpty": false`.
 
 ## Agent permission settings
 
 There is **no sandbox on Windows** — the allow/deny lists are the only guardrail.
 
-- Terminal auto-execution: **Request Review** (IDE). Do not use Turbo/Always Proceed.
+- Terminal auto-execution: **Auto** (2.0) — never Turbo. (IDE equivalent: Request Review.)
 - Allow list (token-prefix matched):
   `.venv\Scripts\python.exe`, `.venv\Scripts\pip.exe`, `git status`, `git diff`, `git log`, `git add`, `git commit`
 - Deny list:
@@ -63,7 +74,8 @@ There is **no sandbox on Windows** — the allow/deny lists are the only guardra
 
 ## How to run the work
 
-1. Open the **project folder** in Antigravity IDE.
+1. Open Antigravity 2.0 and point the task/workspace at the **project folder**
+   (`C:\Users\pmqua\PycharmProjects\vtk_to_d3plot_converter`), main folder, no worktree.
 2. One milestone = one conversation. Long sessions degrade ("context rot" is the documented failure mode); the plan file + git history carry state between conversations.
 3. Kickoff prompt for each milestone (also in `docs/plan.md`, header):
 

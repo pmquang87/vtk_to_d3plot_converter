@@ -1,7 +1,9 @@
 # Antigravity kickoff prompts
 
-Copy-paste these into Antigravity IDE (project folder opened at
-`C:\Users\pmqua\PycharmProjects\vtk_to_d3plot_converter`).
+Copy-paste these into Antigravity (2.0 agent manager or the IDE — same
+harness, same files; workspace pointed at
+`C:\Users\pmqua\PycharmProjects\vtk_to_d3plot_converter`, main folder, no
+worktree).
 One milestone = one NEW conversation. Model advice: **Claude Opus 4.6
 (thinking)** for M2–M4 (binary/format work), **Gemini 3.1 Pro (High)** fine
 for M1 and M5; mixing models spreads quota.
