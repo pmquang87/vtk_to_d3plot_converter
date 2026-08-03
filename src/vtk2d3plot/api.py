@@ -92,14 +92,15 @@ def convert(
 
     # Record which files existed before we start (for safe failure cleanup)
     pre_existing = set()
-    if out.exists():
-        pre_existing.add(out)
-    out01 = out.parent / f"{out.name}01"
-    if out01.exists():
-        pre_existing.add(out01)
+    escaped = re.escape(out.name)
+    pattern = re.compile(f"^{escaped}(\\d*)$", re.IGNORECASE)
+    if out.parent.exists():
+        for f in out.parent.iterdir():
+            if f.is_file() and pattern.match(f.name):
+                pre_existing.add(f)
 
-    # Track files created by this run
-    files_created: list[Path] = []
+    bak_files = {}
+    new_tmp_files = []
 
     # Atomic write: write to temp, then rename on success
     tmp_dir = out.parent
@@ -111,35 +112,64 @@ def convert(
             # Move new files to temp names in the target dir first
             tmp_target_base = out.parent / f"_vtk2d3plot_tmp_{out.name}"
             shutil.move(str(tmp_base), str(tmp_target_base))
+            new_tmp_files.append(tmp_target_base)
             
             tmp_states = Path(td) / "tmp.d3plot01"
             tmp_target_states = out.parent / f"_vtk2d3plot_tmp_{out.name}01"
             if tmp_states.exists():
                 shutil.move(str(tmp_states), str(tmp_target_states))
+                new_tmp_files.append(tmp_target_states)
 
-            # Remove stale family members from a previous run.
-            # Use re.escape to handle special chars (brackets, etc.) in the name.
-            # Match the base name followed by one or more digits.
-            escaped = re.escape(out.name)
-            pattern = re.compile(f"^{escaped}(\\d+)$", re.IGNORECASE)
-            for f in sorted(out.parent.iterdir()):
-                if f.is_file() and pattern.match(f.name):
-                    f.unlink()
-            if out.exists():
-                out.unlink()
+            # Backup pre-existing files
+            for f in pre_existing:
+                bak_path = f.with_name(f.name + ".bak")
+                if f.exists():
+                    shutil.move(str(f), str(bak_path))
+                    bak_files[f] = bak_path
 
             # Move the temps to final names
             shutil.move(str(tmp_target_base), str(out))
-            files_created.append(out)
-            
             if tmp_target_states.exists():
                 shutil.move(str(tmp_target_states), str(out.parent / f"{out.name}01"))
-                files_created.append(out.parent / f"{out.name}01")
+            
+            # Success! Delete backups
+            for bak in bak_files.values():
+                try:
+                    if bak.exists():
+                        bak.unlink()
+                except OSError:
+                    pass
     except Exception:
-        # Clean up ONLY files this run created (not pre-existing ones)
-        for f in files_created:
-            if f.exists() and f not in pre_existing:
-                f.unlink()
+        # Failure! Restore backups
+        for orig, bak in bak_files.items():
+            if bak.exists():
+                try:
+                    # Windows requires destination to not exist for shutil.move
+                    if orig.exists():
+                        orig.unlink()
+                    shutil.move(str(bak), str(orig))
+                except OSError:
+                    pass
+        
+        # Clean up any leftover tmp files
+        for f in new_tmp_files:
+            try:
+                if f.exists():
+                    f.unlink()
+            except OSError:
+                pass
+        
+        # Clean up final names if we were in the middle of replacing them, 
+        # but only if they weren't pre-existing (since backups restored those).
+        if bak_files:
+            try:
+                if out.exists() and out not in pre_existing:
+                    out.unlink()
+                out01 = out.parent / f"{out.name}01"
+                if out01.exists() and out01 not in pre_existing:
+                    out01.unlink()
+            except OSError:
+                pass
         raise
 
     return ConversionReport(

@@ -540,35 +540,48 @@ def build_d3plot(
             "but raw component values differ from global frame"
         )
     elif has_shell_strain_upper_only:
-        # M12 S1: only upper strain exists — map into layer 1
+        # M12 S1: only upper strain exists — duplicate into both layers
         shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
         warn_list.append(
             "only 2DELEM_Strain_(upper) found (lower missing from all states); "
-            "mapped to layer 1, element-local coordinates"
+            "duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
             if "2DELEM_Strain_(upper)" in state.cell_data:
                 t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                shell_strain[i, :, 1, :] = _tensor_to_voigt(t).astype(ftype)
+                voigt = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, 0, :] = voigt
+                shell_strain[i, :, 1, :] = voigt
             else:
                 shell_strain_fill.append(i)
     elif has_shell_strain_lower_only:
-        # M12 S1: only lower strain exists — map into layer 0
+        # M12 S1: only lower strain exists — duplicate into both layers
         shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
         warn_list.append(
             "only 2DELEM_Strain_(lower) found (upper missing from all states); "
-            "mapped to layer 0, element-local coordinates"
+            "duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
             if "2DELEM_Strain_(lower)" in state.cell_data:
                 t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
-                shell_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                voigt = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, 0, :] = voigt
+                shell_strain[i, :, 1, :] = voigt
             else:
                 shell_strain_fill.append(i)
     elif has_shell_strain_membrane:
         shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
         warn_list.append(
-            "shell strain from 2DELEM_Strain_(membrane) — single layer, element-local coordinates"
+            "shell strain from 2DELEM_Strain_(membrane) — single layer duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
             if "2DELEM_Strain_(membrane)" in state.cell_data:
