@@ -901,7 +901,7 @@ def build_d3plot(
         "3DELEM_Hourglass_Energy_per_unit_mass",
     }
     unmapped_cell: dict[str, float] = {}
-    unsupported_cell: dict[str, float] = {}
+    unsupported: dict[str, float] = {}
     unmapped_point: dict[str, float] = {}
     for state in series.states:
         for k, v in state.cell_data.items():
@@ -911,7 +911,7 @@ def build_d3plot(
                 except (TypeError, ValueError):
                     val = 0.0
                 if k in _KNOWN_BUT_UNSUPPORTED:
-                    unsupported_cell[k] = max(unsupported_cell.get(k, 0.0), val)
+                    unsupported[k] = max(unsupported.get(k, 0.0), val)
                 else:
                     unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
         for k, v in state.point_data.items():
@@ -920,10 +920,12 @@ def build_d3plot(
                     val = float(np.abs(v).max())
                 except (TypeError, ValueError):
                     val = 0.0
-                unmapped_point[k] = max(unmapped_point.get(k, 0.0), val)
-    all_unsupported = {**unsupported_cell}
-    if all_unsupported:
-        items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unsupported.items()))
+                if k in _KNOWN_BUT_UNSUPPORTED:
+                    unsupported[k] = max(unsupported.get(k, 0.0), val)
+                else:
+                    unmapped_point[k] = max(unmapped_point.get(k, 0.0), val)
+    if unsupported:
+        items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(unsupported.items()))
         warn_list.append(f"known but unsupported arrays (no d3plot equivalent): {items}")
     all_unmapped = {**unmapped_point, **unmapped_cell}
     if all_unmapped:
