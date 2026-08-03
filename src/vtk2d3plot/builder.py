@@ -285,7 +285,7 @@ def build_d3plot(
         or has_shell_strain_lower_only
         or has_shell_strain_membrane
     ):
-        strain_layers = 1
+        strain_layers = 2
     else:
         strain_layers = 0
 
@@ -519,7 +519,9 @@ def build_d3plot(
     shell_strain = None
     shell_strain_fill: list = []
     if has_shell_strain_2layer:
-        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
         for i, state in enumerate(series.states):
             lo_present = "2DELEM_Strain_(lower)" in state.cell_data
             hi_present = "2DELEM_Strain_(upper)" in state.cell_data
@@ -530,7 +532,7 @@ def build_d3plot(
                 shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
             if hi_present:
                 t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                shell_strain[i, :, 1, :] = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, upper_layer, :] = _tensor_to_voigt(t).astype(ftype)
             else:
                 shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
         # M12: local-frame warning for strain (M1 class)
@@ -541,7 +543,9 @@ def build_d3plot(
         )
     elif has_shell_strain_upper_only:
         # M12 S1: only upper strain exists — duplicate into both layers
-        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
         warn_list.append(
             "only 2DELEM_Strain_(upper) found (lower missing from all states); "
             "duplicated to both layers. "
@@ -554,12 +558,14 @@ def build_d3plot(
                 t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, 1, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
             else:
                 shell_strain_fill.append(i)
     elif has_shell_strain_lower_only:
         # M12 S1: only lower strain exists — duplicate into both layers
-        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
         warn_list.append(
             "only 2DELEM_Strain_(lower) found (upper missing from all states); "
             "duplicated to both layers. "
@@ -572,11 +578,13 @@ def build_d3plot(
                 t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, 1, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
             else:
                 shell_strain_fill.append(i)
     elif has_shell_strain_membrane:
-        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
         warn_list.append(
             "shell strain from 2DELEM_Strain_(membrane) — single layer duplicated to both layers. "
             "shell strain in element-local coordinates (from anim_to_vtk); "
@@ -588,7 +596,7 @@ def build_d3plot(
                 t = state.cell_data["2DELEM_Strain_(membrane)"][model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, 1, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
             else:
                 shell_strain_fill.append(i)
 
@@ -907,6 +915,9 @@ def build_d3plot(
         a[ArrayType.element_solid_strain] = solid_strain
     if shell_thickness is not None:
         a[ArrayType.element_shell_thickness] = shell_thickness
+
+    if shell_strain is not None or solid_strain is not None:
+        d3.header.has_element_strain = True
 
     # M5 fix: set the d3plot header title
     # M9 fix: transliterate non-ASCII, then truncate to readable char budget.

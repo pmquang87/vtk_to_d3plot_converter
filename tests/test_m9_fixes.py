@@ -494,7 +494,10 @@ def test_p2_real_surrogate_does_not_crash(tmp_path):
     except Exception:  # noqa: BLE001
         pytest.skip("Platform does not support surrogate strings")
     convert(PORT_DIR, tmp_path / "box.d3plot", title=title_with_surr)
-    # Must not crash
+    # Must not crash, and the title must start with 'test' and have a replacement char
+    from lasso.dyna import D3plot
+    dp = D3plot(str(tmp_path / "box.d3plot"))
+    assert dp.header.title.startswith("test")
 
 
 def test_p2_bytes_title_does_not_crash(tmp_path):

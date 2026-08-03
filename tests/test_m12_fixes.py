@@ -183,12 +183,24 @@ def test_alive_warning_names_erosion_status(tmp_path):
     from conftest import GOLDEN_ZUG_VTK
 
     from vtk2d3plot.api import convert
+    import unittest.mock
+    from vtk2d3plot import series
 
-    rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
+    original_load = series.load_series
+    def mock_load(path):
+        s = original_load(path)
+        if "EROSION_STATUS" in s.states[-1].cell_data:
+            del s.states[-1].cell_data["EROSION_STATUS"]
+        return s
+    
+    with unittest.mock.patch("vtk2d3plot.series.load_series", side_effect=mock_load):
+        rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
 
     off_warns = [w for w in rep.warnings if "one-filled" in w and "source OFF" in w]
     # If there are alive fill warnings, they should name EROSION_STATUS, not OFF
     assert not off_warns, f"Warning should not say 'source OFF' for EROSION_STATUS: {off_warns}"
+    erosion_warns = [w for w in rep.warnings if "one-filled" in w and "source EROSION_STATUS" in w]
+    assert erosion_warns, "Must emit an alive fill warning that specifically names EROSION_STATUS"
 
 
 # ================================================================
@@ -201,6 +213,8 @@ def test_solid_strain_not_unmapped(tmp_path):
     from conftest import W3_DIR
 
     from vtk2d3plot.api import convert
+
+    from lasso.dyna import D3plot
 
     rep = convert(W3_DIR, tmp_path / "w3.d3plot")
     for w in rep.warnings:
@@ -255,7 +269,8 @@ def test_w3_solid_stress_pin(tmp_path):
     # Solid stress: component 2 is zz
     zz = stress[:, :, 0, 2]
     # Simple check that it mapped
-    assert np.abs(zz).max() > 0
+    max_zz = float(np.abs(zz).max())
+    assert abs(max_zz - 7.17401) < 0.01, f"Expected zz max ~7.17401, got {max_zz}"
 
 
 def test_f64_wordsize_8_pin(tmp_path):
@@ -296,7 +311,7 @@ def test_lasso_mdlopt_pin(tmp_path):
     dp = D3plot(str(tmp_path / "tensile.d3plot"))
     # We omit the exact mdlopt check because lasso 2.0.4 hides it,
     # but verify the extra material variables are present
-    assert dp.header.has_material_type_section in (True, False)
+    assert dp.header.has_material_type_section is False
 
 
 # ================================================================

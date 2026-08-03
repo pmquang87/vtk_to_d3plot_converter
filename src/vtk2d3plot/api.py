@@ -110,15 +110,12 @@ def convert(
             d3.write_d3plot(str(tmp_base))
 
             # Move new files to temp names in the target dir first
-            tmp_target_base = out.parent / f"_vtk2d3plot_tmp_{out.name}"
-            shutil.move(str(tmp_base), str(tmp_target_base))
-            new_tmp_files.append(tmp_target_base)
-            
-            tmp_states = Path(td) / "tmp.d3plot01"
-            tmp_target_states = out.parent / f"_vtk2d3plot_tmp_{out.name}01"
-            if tmp_states.exists():
-                shutil.move(str(tmp_states), str(tmp_target_states))
-                new_tmp_files.append(tmp_target_states)
+            for f in Path(td).iterdir():
+                if f.is_file() and f.name.startswith("tmp.d3plot"):
+                    suffix = f.name[len("tmp.d3plot"):]
+                    tmp_target = out.parent / f"_vtk2d3plot_tmp_{out.name}{suffix}"
+                    shutil.move(str(f), str(tmp_target))
+                    new_tmp_files.append(tmp_target)
 
             # Backup pre-existing files
             for f in pre_existing:
@@ -128,9 +125,10 @@ def convert(
                     bak_files[f] = bak_path
 
             # Move the temps to final names
-            shutil.move(str(tmp_target_base), str(out))
-            if tmp_target_states.exists():
-                shutil.move(str(tmp_target_states), str(out.parent / f"{out.name}01"))
+            for tmp_f in new_tmp_files:
+                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}"):]
+                final_name = out.parent / f"{out.name}{suffix}"
+                shutil.move(str(tmp_f), str(final_name))
             
             # Success! Delete backups
             for bak in bak_files.values():
@@ -162,14 +160,14 @@ def convert(
         # Clean up final names if we were in the middle of replacing them, 
         # but only if they weren't pre-existing (since backups restored those).
         if bak_files:
-            try:
-                if out.exists() and out not in pre_existing:
-                    out.unlink()
-                out01 = out.parent / f"{out.name}01"
-                if out01.exists() and out01 not in pre_existing:
-                    out01.unlink()
-            except OSError:
-                pass
+            for tmp_f in new_tmp_files:
+                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}"):]
+                final_name = out.parent / f"{out.name}{suffix}"
+                try:
+                    if final_name.exists() and final_name not in pre_existing:
+                        final_name.unlink()
+                except OSError:
+                    pass
         raise
 
     return ConversionReport(
