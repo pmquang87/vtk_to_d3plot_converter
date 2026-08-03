@@ -99,18 +99,24 @@ def main(argv: list[str] | None = None) -> None:
             print(f"ERROR: part-names file not found: {pn_path}", file=sys.stderr)
             raise SystemExit(1)
         try:
-            text = pn_path.read_text(encoding="utf-8-sig")  # handles BOM
+            raw = pn_path.read_bytes()
+            if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+                text = raw.decode("utf-16")
+            elif raw.startswith(b"\xef\xbb\xbf"):
+                text = raw.decode("utf-8-sig")
+            else:
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = raw.decode("cp1252")
+                    if not args.quiet:
+                        print("WARNING: part-names file is cp1252-encoded, not UTF-8", file=sys.stderr)
         except UnicodeDecodeError:
-            try:
-                text = pn_path.read_text(encoding="cp1252")
-                if not args.quiet:
-                    print("WARNING: part-names file is cp1252-encoded, not UTF-8", file=sys.stderr)
-            except UnicodeDecodeError:
-                print(
-                    f"ERROR: cannot decode part-names file {pn_path} (tried UTF-8, cp1252)",
-                    file=sys.stderr,
-                )
-                raise SystemExit(1)
+            print(
+                f"ERROR: cannot decode part-names file {pn_path}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):

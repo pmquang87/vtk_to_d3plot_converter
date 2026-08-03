@@ -64,8 +64,9 @@ def map_topology(state0: VtkState) -> MappedModel:
     n_skipped = 0
     skipped_cell_types: set[int] = set()
 
-    for i, (ct, cell) in enumerate(zip(state0.cell_types, state0.cells)):
+    for i, ct in enumerate(state0.cell_types):
         ct = int(ct)
+        cell = state0.get_cell(i)
         # M7: mask cells referencing zero-ID nodes (phantom geometry)
         if zero_id_point_indices and any(int(v) in zero_id_point_indices for v in cell):
             n_phantom_masked += 1
@@ -146,31 +147,39 @@ def map_topology(state0: VtkState) -> MappedModel:
     if "ELEMENT_ID" in state0.cell_data:
         raw_elem_ids = state0.cell_data["ELEMENT_ID"].astype(np.int32)
         solid_ids = raw_elem_ids[solid_src].copy() if n_solids else np.empty((0,), dtype=np.int32)
+        shell_ids = raw_elem_ids[shell_src].copy() if n_shells else np.empty((0,), dtype=np.int32)
+        beam_ids = raw_elem_ids[beam_src].copy() if n_beams else np.empty((0,), dtype=np.int32)
+
+        global_max_id = 0
+        if len(raw_elem_ids) > 0:
+            global_max_id = np.max(raw_elem_ids)
+
         if n_solids:
             zero_mask = solid_ids == 0
             if np.any(zero_mask):
-                max_id = np.max(solid_ids)
+                n_zeros = np.sum(zero_mask)
                 solid_ids[zero_mask] = np.arange(
-                    max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32
+                    global_max_id + 1, global_max_id + 1 + n_zeros, dtype=np.int32
                 )
+                global_max_id += n_zeros
 
-        shell_ids = raw_elem_ids[shell_src].copy() if n_shells else np.empty((0,), dtype=np.int32)
         if n_shells:
             zero_mask = shell_ids == 0
             if np.any(zero_mask):
-                max_id = np.max(shell_ids)
+                n_zeros = np.sum(zero_mask)
                 shell_ids[zero_mask] = np.arange(
-                    max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32
+                    global_max_id + 1, global_max_id + 1 + n_zeros, dtype=np.int32
                 )
+                global_max_id += n_zeros
 
-        beam_ids = raw_elem_ids[beam_src].copy() if n_beams else np.empty((0,), dtype=np.int32)
         if n_beams:
             zero_mask = beam_ids == 0
             if np.any(zero_mask):
-                max_id = np.max(beam_ids)
+                n_zeros = np.sum(zero_mask)
                 beam_ids[zero_mask] = np.arange(
-                    max_id + 1, max_id + 1 + np.sum(zero_mask), dtype=np.int32
+                    global_max_id + 1, global_max_id + 1 + n_zeros, dtype=np.int32
                 )
+                global_max_id += n_zeros
     else:
         solid_ids = np.arange(1, n_solids + 1, dtype=np.int32)
         shell_ids = np.arange(n_solids + 1, n_solids + n_shells + 1, dtype=np.int32)

@@ -77,7 +77,8 @@ def check_d3plot(
             # Resolve state count from the d3plot for a concrete state command.
             # 'state last;' is a silent LS-PrePost no-op.
             try:
-                from lasso.dyna import ArrayType, D3plot as _D3plot
+                from lasso.dyna import ArrayType
+                from lasso.dyna import D3plot as _D3plot
                 _dp = _D3plot(str(d3))
                 _ts = _dp.arrays.get(ArrayType.global_timesteps)
                 _n = len(_ts) if _ts is not None else 1

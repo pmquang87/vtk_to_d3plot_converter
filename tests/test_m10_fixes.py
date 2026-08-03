@@ -278,24 +278,23 @@ def test_unmapped_absmax_accumulates(tmp_path):
     assert np.isclose(float(m.group(1)), 99.99)
 
 
-def test_zug_specific_energy_absmax_nonzero(tmp_path):
-    """Zug 2DELEM_Specific_Energy is 0 at state 0 but nonzero later — absmax must be >0."""
+def test_zug_specific_energy_mapped(tmp_path):
+    """Zug 2DELEM_Specific_Energy is 0 at state 0 but nonzero later — it must be mapped to internal energy."""
+    from lasso.dyna import ArrayType, D3plot
+
     from vtk2d3plot.api import convert
 
     rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
     unmapped = [w for w in rep.warnings if "unmapped" in w.lower()]
-    assert unmapped
-    assert "Specific_Energy" in unmapped[0]
-    # absmax must be > 0 (was frozen at 0 before fix)
-    import re
-
-    m = re.search(r"2DELEM_Specific_Energy \(absmax=([0-9.e+\-]+)\)", unmapped[0])
-    assert m, f"Could not parse absmax from warning: {unmapped[0]}"
-    assert float(m.group(1)) > 0, f"absmax should be >0, got {m.group(1)}"
-    # Pin the exact value from the zug fixture (state 2 has 2015.09)
-    assert np.isclose(float(m.group(1)), 2015.09, rtol=0.01), (
-        f"Expected absmax ≈ 2015.09, got {m.group(1)}"
-    )
+    if unmapped:
+        assert "2DELEM_Specific_Energy" not in unmapped[0], "Specific energy should be mapped, not unmapped"
+    
+    dp = D3plot(str(tmp_path / "zug.d3plot"))
+    ie = dp.arrays[ArrayType.element_shell_internal_energy]
+    # State 2 has 2015.09
+    assert ie.shape[0] > 2
+    assert ie.shape[1] > 0
+    assert np.isclose(ie[2].max(), 2015.09, rtol=0.01), f"Expected max IE ≈ 2015.09, got {ie[2].max()}"
 
 
 # ── Fix 3: Title Budget ──

@@ -22,7 +22,7 @@ def test_read_port_state0():
     s = read_vtk(PORT_DIR / "BOXIMPA000.vtk")
     assert s.points.shape == (220, 3)
     assert s.time == pytest.approx(2.902412789e-04)
-    assert len(s.cells) == 200 and set(s.cell_types) == {9}
+    assert s.n_cells == 200 and set(s.cell_types) == {9}
     assert s.point_data["DISPLACEMENT"].shape == (220, 3)
     assert s.cell_data["OFF"].shape == (200,)
 

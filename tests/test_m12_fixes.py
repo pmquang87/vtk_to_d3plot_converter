@@ -17,7 +17,7 @@ def test_zug_strain_2layer_not_membrane(tmp_path):
     M12 S1: 2-layer branch must win — verify by checking the warning
     text (2-layer emits local-frame warning; membrane emits different msg).
     """
-    from conftest import GOLDEN_ZUG_VTK, GOLDEN_ZUG_D3
+    from conftest import GOLDEN_ZUG_VTK
     from lasso.dyna import ArrayType, D3plot
 
     from vtk2d3plot.api import convert
@@ -79,6 +79,7 @@ def test_tensile_strain_membrane_fallback(tmp_path):
 def test_fill_warning_thickness_acceleration_strain(tmp_path):
     """Builder must emit zero-fill warnings when states are missing arrays."""
     from conftest import TENSILE_DIR
+
     from vtk2d3plot.api import convert
 
     rep = convert(TENSILE_DIR, tmp_path / "tensile.d3plot")
@@ -89,13 +90,15 @@ def test_fill_warning_thickness_acceleration_strain(tmp_path):
 
 def test_fill_warning_missing_state_injection(tmp_path):
     """S2: Missing state arrays must generate zero-fill warnings."""
-    from conftest import TENSILE_DIR
-    from vtk2d3plot.api import convert
-    from vtk2d3plot import series
     from unittest.mock import patch
+
+    from conftest import TENSILE_DIR
+
+    from vtk2d3plot import series
+    from vtk2d3plot.api import convert
     
     original_read = series.load_series
-    def mock_read(path):
+    def mock_read(path, **kwargs):
         s = original_read(path)
         # Delete thickness from the last state
         if "2DELEM_Thickness" in s.states[-1].cell_data:
@@ -137,10 +140,12 @@ def test_atomic_case_insensitive_cleanup(tmp_path):
 
 def test_atomic_locked_file_injection(tmp_path):
     """T5: A locked file must cause failure and restore the pre-existing files, leaving no tmp files."""
-    from conftest import PORT_DIR
-    from vtk2d3plot.api import convert
-    from unittest.mock import patch
     import shutil
+    from unittest.mock import patch
+
+    from conftest import PORT_DIR
+
+    from vtk2d3plot.api import convert
     
     out = tmp_path / "box.d3plot"
     out01 = tmp_path / "box.d3plot01"
@@ -159,9 +164,8 @@ def test_atomic_locked_file_injection(tmp_path):
             raise OSError("Simulated lock by LS-PrePost")
         return original_move(src, dst)
         
-    with patch("shutil.move", side_effect=failing_move):
-        with pytest.raises(OSError):
-            convert(PORT_DIR, out)
+    with patch("shutil.move", side_effect=failing_move), pytest.raises(OSError):
+        convert(PORT_DIR, out)
             
     # Assert original files survived exactly as they were
     assert out.exists()
@@ -180,14 +184,15 @@ def test_atomic_locked_file_injection(tmp_path):
 
 def test_alive_warning_names_erosion_status(tmp_path):
     """When alive source is EROSION_STATUS, warning must say so (not 'OFF')."""
+    import unittest.mock
+
     from conftest import GOLDEN_ZUG_VTK
 
-    from vtk2d3plot.api import convert
-    import unittest.mock
     from vtk2d3plot import series
+    from vtk2d3plot.api import convert
 
     original_load = series.load_series
-    def mock_load(path):
+    def mock_load(path, **kwargs):
         s = original_load(path)
         if "EROSION_STATUS" in s.states[-1].cell_data:
             del s.states[-1].cell_data["EROSION_STATUS"]
@@ -213,8 +218,6 @@ def test_solid_strain_not_unmapped(tmp_path):
     from conftest import W3_DIR
 
     from vtk2d3plot.api import convert
-
-    from lasso.dyna import D3plot
 
     rep = convert(W3_DIR, tmp_path / "w3.d3plot")
     for w in rep.warnings:
@@ -261,6 +264,7 @@ def test_w3_solid_stress_pin(tmp_path):
     """W3: solid stress tensor mapping check (zz component)."""
     from conftest import W3_DIR
     from lasso.dyna import ArrayType, D3plot
+
     from vtk2d3plot.api import convert
 
     convert(W3_DIR, tmp_path / "w3.d3plot")
@@ -277,6 +281,7 @@ def test_f64_wordsize_8_pin(tmp_path):
     """M12: f64 array types must have header.wordsize=8."""
     from conftest import TENSILE_DIR
     from lasso.dyna import D3plot
+
     from vtk2d3plot.api import convert
     
     convert(TENSILE_DIR, tmp_path / "tensile.d3plot", f64=True)
@@ -288,8 +293,9 @@ def test_f64_wordsize_8_pin(tmp_path):
 
 def test_latch_pins_erosion(tmp_path):
     """M12: erosion status latching must be verified."""
-    from conftest import GOLDEN_ZUG_VTK, GOLDEN_ZUG_D3
+    from conftest import GOLDEN_ZUG_D3, GOLDEN_ZUG_VTK
     from lasso.dyna import ArrayType, D3plot
+
     from vtk2d3plot.api import convert
     
     convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
@@ -305,6 +311,7 @@ def test_lasso_mdlopt_pin(tmp_path):
     """M12: lasso mdlopt pin check."""
     from conftest import TENSILE_DIR
     from lasso.dyna import D3plot
+
     from vtk2d3plot.api import convert
     
     convert(TENSILE_DIR, tmp_path / "tensile.d3plot")
@@ -321,6 +328,7 @@ def test_lasso_mdlopt_pin(tmp_path):
 def test_golden_manifest():
     """Verify golden manifest."""
     import subprocess
+
     from conftest import REPO, VENV_PY
     
     proc = subprocess.run([str(VENV_PY), "tools/golden_manifest.py", "verify"], cwd=str(REPO), capture_output=True, text=True)
@@ -335,8 +343,9 @@ def test_golden_manifest():
 @pytest.mark.lspp
 def test_lspp_check_renders_last_state(tmp_path):
     """lspp_check.py must navigate to the last state and render it."""
-    from conftest import GOLDEN_ZUG_D3, VENV_PY
     import subprocess
+
+    from conftest import GOLDEN_ZUG_D3, VENV_PY
     
     png = tmp_path / "out.png"
     # We call it as a script to verify the CLI works

@@ -8,7 +8,35 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
+
+
+class WarningCode(str, Enum):
+    """Machine-readable warning codes for pipeline integration."""
+    NO_DISPLACEMENT = "NO_DISPLACEMENT"
+    SYNTHETIC_STRESS = "SYNTHETIC_STRESS"
+    SHELL_LOCAL_FRAME = "SHELL_LOCAL_FRAME"
+    STRAIN_MEMBRANE_IGNORED = "STRAIN_MEMBRANE_IGNORED"
+    LAYER_MISMATCH = "LAYER_MISMATCH"
+    EROSION_FORCED_ALIVE = "EROSION_FORCED_ALIVE"
+    SOLID_INTERNAL_ENERGY_HISTVAR = "SOLID_INTERNAL_ENERGY_HISTVAR"
+    SKIPPED_CELLS = "SKIPPED_CELLS"
+    KNOWN_UNSUPPORTED = "KNOWN_UNSUPPORTED"
+    UNMAPPED_ARRAYS = "UNMAPPED_ARRAYS"
+    TITLE_SANITIZED = "TITLE_SANITIZED"
+    ZERO_FILL = "ZERO_FILL"
+    OTHER = "OTHER"
+
+
+@dataclass
+class StructuredWarning:
+    """A single warning with machine-readable code and human-readable message."""
+    code: WarningCode
+    message: str
+
+    def to_dict(self) -> dict:
+        return {"code": self.code.value, "message": self.message}
 
 
 @dataclass
@@ -24,9 +52,13 @@ class ConversionReport:
     n_parts: int
     dialect: str
     warnings: list[str] = field(default_factory=list)
+    structured_warnings: list[StructuredWarning] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Convert StructuredWarning objects properly
+        d["structured_warnings"] = [w.to_dict() for w in self.structured_warnings]
+        return d
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
@@ -64,7 +96,7 @@ def convert(
     from .mapping import map_topology
     from .series import load_series
 
-    series = load_series(inputs)
+    series = load_series(inputs, progress_cb=progress)
     model = map_topology(series.states[0])
     d3, warn_list = build_d3plot(
         series,
@@ -170,6 +202,38 @@ def convert(
                     pass
         raise
 
+    # Classify warnings into structured codes for machine-readable pipeline use
+    structured = []
+    for w in warn_list:
+        wl = w.lower()
+        if "no displacement" in wl:
+            code = WarningCode.NO_DISPLACEMENT
+        elif "synthetic" in wl or "synthetic-uniaxial" in wl:
+            code = WarningCode.SYNTHETIC_STRESS
+        elif "local coordinates" in wl or "local frame" in wl:
+            code = WarningCode.SHELL_LOCAL_FRAME
+        elif "membrane" in wl and "ignored" in wl:
+            code = WarningCode.STRAIN_MEMBRANE_IGNORED
+        elif "layer" in wl and "reconciled" in wl:
+            code = WarningCode.LAYER_MISMATCH
+        elif "forced alive" in wl or "erosion" in wl:
+            code = WarningCode.EROSION_FORCED_ALIVE
+        elif "history_variables" in wl:
+            code = WarningCode.SOLID_INTERNAL_ENERGY_HISTVAR
+        elif "skipped" in wl and "unsupported cells" in wl:
+            code = WarningCode.SKIPPED_CELLS
+        elif "known but unsupported" in wl:
+            code = WarningCode.KNOWN_UNSUPPORTED
+        elif "unmapped" in wl:
+            code = WarningCode.UNMAPPED_ARRAYS
+        elif "title" in wl and ("truncat" in wl or "transliterat" in wl or "replaced" in wl):
+            code = WarningCode.TITLE_SANITIZED
+        elif "zero-filled" in wl:
+            code = WarningCode.ZERO_FILL
+        else:
+            code = WarningCode.OTHER
+        structured.append(StructuredWarning(code=code, message=w))
+
     return ConversionReport(
         output=str(out),
         n_states=len(series.states),
@@ -180,4 +244,5 @@ def convert(
         n_parts=model.part_ids.shape[0],
         dialect=series.dialect,
         warnings=warn_list,
+        structured_warnings=structured,
     )

@@ -51,7 +51,7 @@ def test_cli_part_names_utf8_bom(tmp_path):
 
     dp = D3plot(str(tmp_path / "box.d3plot"))
     titles = dp.arrays[ArrayType.part_titles]
-    title_str = titles[0].decode("utf-8", errors="replace").strip()
+    title_str = titles[0].decode("utf-8", errors="replace").strip("\x00").strip()
     assert "MyPart" in title_str, f"BOM file content should not be ignored; got {title_str!r}"
 
 

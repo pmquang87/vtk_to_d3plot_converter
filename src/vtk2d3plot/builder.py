@@ -245,10 +245,23 @@ def build_d3plot(
         and not has_shell_strain_lower_only
         and _any_state_has(series, "2DELEM_Strain_(membrane)")
     )
+    if n_shells > 0 and _any_state_has(series, "2DELEM_Strain_(membrane)") and not has_shell_strain_membrane:
+        warn_list.append("2DELEM_Strain_(membrane) ignored because upper/lower layers were also found")
+
     # --- Official: solid strain tensor ---
     has_solid_strain = n_solids > 0 and _any_state_has(series, "3DELEM_Strain")
     # --- Official: shell thickness ---
     has_shell_thickness = n_shells > 0 and _any_state_has(series, "2DELEM_Thickness")
+    # --- Official: shell internal energy ---
+    has_shell_internal_energy = n_shells > 0 and _any_state_has(series, "2DELEM_Specific_Energy")
+    # --- Official: solid internal energy ---
+    has_solid_internal_energy = n_solids > 0 and _any_state_has(series, "3DELEM_Specific_Energy")
+    # --- Official: 3DELEM_Von_Mises scalar (fallback for solid stress) ---
+    has_solid_vonmises = n_solids > 0 and (
+        not has_solid_stress
+        and not has_vonm
+        and _any_state_has(series, "3DELEM_Von_Mises")
+    )
 
     # Shell stress layers count (from stress source)
     if has_shell_stress_2layer:
@@ -278,9 +291,7 @@ def build_d3plot(
         eps_layers = 0
 
     # Shell strain layers count
-    if has_shell_strain_2layer:
-        strain_layers = 2
-    elif (
+    if has_shell_strain_2layer or (
         has_shell_strain_upper_only
         or has_shell_strain_lower_only
         or has_shell_strain_membrane
@@ -322,6 +333,16 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "VONM" in state.cell_data:
                 vonm = state.cell_data["VONM"][model.solid_src]
+                solid_stress[i, :, 0, 0] = vonm.astype(ftype)
+            else:
+                solid_stress_fill.append(i)
+    elif has_solid_vonmises:
+        # Official dialect: 3DELEM_Von_Mises scalar → synthetic-uniaxial solid stress
+        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+        warn_list.append("solid stress tensor is synthetic-uniaxial from 3DELEM_Von_Mises")
+        for i, state in enumerate(series.states):
+            if "3DELEM_Von_Mises" in state.cell_data:
+                vonm = state.cell_data["3DELEM_Von_Mises"][model.solid_src]
                 solid_stress[i, :, 0, 0] = vonm.astype(ftype)
             else:
                 solid_stress_fill.append(i)
@@ -434,6 +455,35 @@ def build_d3plot(
                 solid_eps[i, :, 0] = state.cell_data["EPSP"][model.solid_src].astype(ftype)
             else:
                 solid_eps_fill.append(i)
+
+    # ================================================================
+    # === Shell internal energy (n_states, n_shells) ===
+    # ================================================================
+    shell_internal_energy = None
+    shell_internal_energy_fill: list[int] = []
+    if has_shell_internal_energy:
+        shell_internal_energy = np.zeros((n_states, n_shells), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "2DELEM_Specific_Energy" in state.cell_data:
+                ie = state.cell_data["2DELEM_Specific_Energy"][model.shell_src]
+                shell_internal_energy[i, :] = ie.astype(ftype)
+            else:
+                shell_internal_energy_fill.append(i)
+
+    # ================================================================
+    # === Solid internal energy (mapped to history variables) ===
+    # ================================================================
+    solid_history_vars = None
+    solid_history_vars_fill: list[int] = []
+    if has_solid_internal_energy:
+        warn_list.append("solid internal energy mapped to element_solid_history_variables (index 0)")
+        solid_history_vars = np.zeros((n_states, n_solids, 1, 1), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "3DELEM_Specific_Energy" in state.cell_data:
+                ie = state.cell_data["3DELEM_Specific_Energy"][model.solid_src]
+                solid_history_vars[i, :, 0, 0] = ie.astype(ftype)
+            else:
+                solid_history_vars_fill.append(i)
 
     # ================================================================
     # === Shell plastic strain ===
@@ -812,6 +862,7 @@ def build_d3plot(
         "3DELEM_Stress",
         "3DELEM_Strain",
         "3DELEM_Plastic_Strain",
+        "3DELEM_Von_Mises",
         "2DELEM_Stress_(lower)",
         "2DELEM_Stress_(upper)",
         "2DELEM_Stress_(membrane)",
@@ -823,8 +874,34 @@ def build_d3plot(
         "2DELEM_Strain_(lower)",
         "2DELEM_Strain_(upper)",
         "2DELEM_Thickness",
+        "2DELEM_Specific_Energy",
+        "3DELEM_Specific_Energy",
+    }
+    # Arrays we recognize but cannot map to a d3plot field — suppress noise
+    _KNOWN_BUT_UNSUPPORTED = {
+        "Contact_Forces",
+        "Contact_Pressure_/_Normal",
+        "Contact_Pressure_/_Tangent",
+        "Tied_Contact_Forces",
+        "Mass_Change",
+        "Time_Step",
+        "1DELEM_Force_&_Moment_F1",
+        "1DELEM_Force_&_Moment_F2",
+        "1DELEM_Force_&_Moment_F3",
+        "1DELEM_Force_&_Moment_M1",
+        "1DELEM_Force_&_Moment_M2",
+        "1DELEM_Force_&_Moment_M3",
+        "1DELEM_Force_&_Moment_M4",
+        "1DELEM_Force_&_Moment_M5",
+        "1DELEM_Force_&_Moment_M6",
+        "1DELEM_Plastic_Strain",
+        "1DELEM_Specific_Energy",
+        "1DELEM_Von_Mises",
+        "2DELEM_Hourglass_Energy_per_unit_mass",
+        "3DELEM_Hourglass_Energy_per_unit_mass",
     }
     unmapped_cell: dict[str, float] = {}
+    unsupported_cell: dict[str, float] = {}
     unmapped_point: dict[str, float] = {}
     for state in series.states:
         for k, v in state.cell_data.items():
@@ -833,7 +910,10 @@ def build_d3plot(
                     val = float(np.abs(v).max())
                 except (TypeError, ValueError):
                     val = 0.0
-                unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
+                if k in _KNOWN_BUT_UNSUPPORTED:
+                    unsupported_cell[k] = max(unsupported_cell.get(k, 0.0), val)
+                else:
+                    unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
         for k, v in state.point_data.items():
             if k not in _RECOGNIZED_POINT:
                 try:
@@ -841,6 +921,10 @@ def build_d3plot(
                 except (TypeError, ValueError):
                     val = 0.0
                 unmapped_point[k] = max(unmapped_point.get(k, 0.0), val)
+    all_unsupported = {**unsupported_cell}
+    if all_unsupported:
+        items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unsupported.items()))
+        warn_list.append(f"known but unsupported arrays (no d3plot equivalent): {items}")
     all_unmapped = {**unmapped_point, **unmapped_cell}
     if all_unmapped:
         items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unmapped.items()))
@@ -876,12 +960,7 @@ def build_d3plot(
         titles_list = []
         for pid in model.part_ids:
             name = part_names.get(int(pid), f"Part {int(pid)}")
-            # Transliterate part names for ASCII safety (lasso encodes as UTF-8 bytes)
-            name_clean = name
-            for src, dst in _TRANSLIT.items():
-                name_clean = name_clean.replace(src, dst)
-            name_clean = name_clean.encode("ascii", errors="replace").decode("ascii")
-            titles_list.append(name_clean.encode("utf-8"))
+            titles_list.append(name.encode("utf-8"))
         a[ArrayType.part_titles] = np.array(titles_list)
     else:
         a[ArrayType.part_titles] = np.array([b"Part %d" % int(pid) for pid in model.part_ids])
@@ -903,6 +982,10 @@ def build_d3plot(
         a[ArrayType.element_solid_effective_plastic_strain] = solid_eps
     if shell_eps is not None:
         a[ArrayType.element_shell_effective_plastic_strain] = shell_eps
+    if shell_internal_energy is not None:
+        a[ArrayType.element_shell_internal_energy] = shell_internal_energy
+    if solid_history_vars is not None:
+        a[ArrayType.element_solid_history_variables] = solid_history_vars
     if shell_alive is not None:
         a[ArrayType.element_shell_is_alive] = shell_alive
     if solid_alive is not None:

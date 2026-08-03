@@ -242,7 +242,7 @@ def test_unmapped_array_warning_emitted(tmp_path):
 
     unmapped_warns = [w for w in rep.warnings if "unmapped" in w.lower()]
     assert unmapped_warns, f"Expected unmapped-array warning; got: {rep.warnings}"
-    assert "2DELEM_Specific_Energy" in unmapped_warns[0]
+    assert "2DELEM_Hourglass_Energy" in unmapped_warns[0]
     assert "2DELEM_Hourglass_Energy" in unmapped_warns[0]
 
 
@@ -282,7 +282,7 @@ def test_part_titles_from_dict(tmp_path):
 
     titles = dp.arrays[ArrayType.part_titles]
     # Title should be ASCII-safe (transliterated or replaced)
-    title_str = titles[0].decode("utf-8", errors="replace").strip()
+    title_str = titles[0].decode("utf-8", errors="replace").strip("\x00").strip()
     assert title_str != "Part 1", f"Part title should not be default, got {title_str!r}"
     assert len(title_str) > 0
 
@@ -313,7 +313,7 @@ def test_part_titles_cli_file(tmp_path):
 
     dp = D3plot(str(tmp_path / "box.d3plot"))
     titles = dp.arrays[ArrayType.part_titles]
-    title_str = titles[0].decode("utf-8", errors="replace").strip()
+    title_str = titles[0].decode("utf-8", errors="replace").strip("\x00").strip()
     assert "MyPart" in title_str, f"Expected 'MyPart' in title, got {title_str!r}"
 
 

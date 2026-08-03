@@ -13,9 +13,18 @@ class VtkState:
     time: float | None  # from FIELD TIME or title regex r"t=([0-9.eE+\-]+)"
     points: np.ndarray  # (n_points, 3) float64
     cell_types: np.ndarray  # (n_cells,) int32, VTK type ids
-    cells: list[np.ndarray]  # per cell, 0-based point indices (ragged)
+    cell_connectivity: np.ndarray  # flat 1D int32 of all node indices
+    cell_offsets: np.ndarray  # (n_cells+1,) int32, start offset per cell
     point_data: dict[str, np.ndarray] = field(default_factory=dict)
     cell_data: dict[str, np.ndarray] = field(default_factory=dict)
+
+    def get_cell(self, i: int) -> np.ndarray:
+        """Return the 0-based node indices for cell *i*."""
+        return self.cell_connectivity[self.cell_offsets[i]:self.cell_offsets[i + 1]]
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.cell_types)
 
 
 def _read_tokens(
@@ -115,7 +124,8 @@ def read_vtk(path: str | Path) -> VtkState:
             raise ValueError(f"Expected DATASET UNSTRUCTURED_GRID, got: {line4}")
 
         points = np.zeros((0, 3), dtype=np.float64)
-        cells = []
+        cell_connectivity = np.zeros(0, dtype=np.int32)
+        cell_offsets = np.zeros(1, dtype=np.int32)  # [0]
         cell_types = np.zeros(0, dtype=np.int32)
         point_data = {}
         cell_data = {}
@@ -153,13 +163,17 @@ def read_vtk(path: str | Path) -> VtkState:
                 size = int(tokens[2])
                 arr = _read_numeric_block(lines, size, dtype=np.int32, filepath=path)
 
-                # Each cell: npts idx0 idx1 ...
+                # Build flat connectivity + offsets from npts idx0 idx1 ...
+                offsets_list = [0]
+                conn_parts = []
                 idx = 0
                 for _ in range(n_cells):
-                    npts = arr[idx]
-                    cell_pts = arr[idx + 1 : idx + 1 + npts]
-                    cells.append(cell_pts)
+                    npts = int(arr[idx])
+                    conn_parts.append(arr[idx + 1 : idx + 1 + npts])
+                    offsets_list.append(offsets_list[-1] + npts)
                     idx += 1 + npts
+                cell_connectivity = np.concatenate(conn_parts) if conn_parts else np.zeros(0, dtype=np.int32)
+                cell_offsets = np.array(offsets_list, dtype=np.int32)
             elif cmd == "CELL_TYPES":
                 n_cells = int(tokens[1])
                 cell_types = _read_numeric_block(lines, n_cells, dtype=np.int32, filepath=path)
@@ -219,7 +233,8 @@ def read_vtk(path: str | Path) -> VtkState:
             time=time_val,
             points=points,
             cell_types=cell_types,
-            cells=cells,
+            cell_connectivity=cell_connectivity,
+            cell_offsets=cell_offsets,
             point_data=point_data,
             cell_data=cell_data,
         )
