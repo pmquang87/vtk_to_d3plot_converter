@@ -25,6 +25,7 @@ class MappedModel:
     beam_src: np.ndarray  # (n_beams,) int32
     n_phantom_masked: int = 0
     n_skipped_cells: int = 0
+    n_inverted_tetras: int = 0
     skipped_cell_types: set = field(default_factory=set)  # set of unsupported VTK type ints
 
 
@@ -108,6 +109,24 @@ def map_topology(state0: VtkState) -> MappedModel:
     solid_src = np.array(solid_src_list, dtype=np.int32)
     shell_src = np.array(shell_src_list, dtype=np.int32)
     beam_src = np.array(beam_src_list, dtype=np.int32)
+
+    n_inverted_tetras = 0
+    if len(solid_conn) > 0:
+        tet_mask = state0.cell_types[solid_src] == 10
+        if np.any(tet_mask):
+            tet_idx = np.where(tet_mask)[0]
+            p0 = state0.points[solid_conn[tet_idx, 0]]
+            p1 = state0.points[solid_conn[tet_idx, 1]]
+            p2 = state0.points[solid_conn[tet_idx, 2]]
+            p3 = state0.points[solid_conn[tet_idx, 3]]
+            vol = np.sum(np.cross(p1 - p0, p2 - p0) * (p3 - p0), axis=1)
+            neg_mask = vol < 0
+            if np.any(neg_mask):
+                neg_idx = tet_idx[neg_mask]
+                n_inverted_tetras = len(neg_idx)
+                tmp = solid_conn[neg_idx, 0].copy()
+                solid_conn[neg_idx, 0] = solid_conn[neg_idx, 1]
+                solid_conn[neg_idx, 1] = tmp
 
     # 3. Part IDs
     if "PART_ID" in state0.cell_data:
@@ -204,5 +223,6 @@ def map_topology(state0: VtkState) -> MappedModel:
         beam_src=beam_src,
         n_phantom_masked=n_phantom_masked,
         n_skipped_cells=n_skipped,
+        n_inverted_tetras=n_inverted_tetras,
         skipped_cell_types=skipped_cell_types,
     )

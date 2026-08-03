@@ -33,8 +33,21 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--f64",
         action="store_true",
+        default=True,
+        help="Write 64-bit output (default: enabled).",
+    )
+    ap.add_argument(
+        "--f32",
+        action="store_true",
         default=False,
-        help="Write 64-bit output (default: 32-bit).",
+        help="Write 32-bit output (overrides --f64).",
+    )
+
+    ap.add_argument(
+        "--rotate-shell-stress",
+        action="store_true",
+        default=False,
+        help="Rotate shell stress from element-local to global coordinate frame.",
     )
     ap.add_argument(
         "--title",
@@ -100,7 +113,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(1)
         try:
             raw = pn_path.read_bytes()
-            if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
                 text = raw.decode("utf-16")
             elif raw.startswith(b"\xef\xbb\xbf"):
                 text = raw.decode("utf-8-sig")
@@ -110,7 +123,9 @@ def main(argv: list[str] | None = None) -> None:
                 except UnicodeDecodeError:
                     text = raw.decode("cp1252")
                     if not args.quiet:
-                        print("WARNING: part-names file is cp1252-encoded, not UTF-8", file=sys.stderr)
+                        print(
+                            "WARNING: part-names file is cp1252-encoded, not UTF-8", file=sys.stderr
+                        )
         except UnicodeDecodeError:
             print(
                 f"ERROR: cannot decode part-names file {pn_path}",
@@ -147,14 +162,18 @@ def main(argv: list[str] | None = None) -> None:
         def progress_fn(state_index: int, n_states: int) -> None:
             print(f"  Processing state {state_index + 1}/{n_states}...")
 
+    # --f32 overrides --f64
+    use_f64 = args.f64 and not args.f32
+
     try:
         rep = convert(
             inputs,
             args.output,
             title=args.title,
-            f64=args.f64,
+            f64=use_f64,
             part_names=part_names,
             progress=progress_fn,
+            rotate_shell_stress=args.rotate_shell_stress,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

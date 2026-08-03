@@ -452,14 +452,14 @@ def test_p2_non_ascii_title_no_crash(tmp_path):
 
 
 def test_p2_non_ascii_long_title_truncation(tmp_path):
-    """Long title with many non-ASCII chars (>36 bytes) must truncate on char boundary."""
+    """Long title with many non-ASCII chars (>36 bytes) must truncate on char boundary (32-bit mode)."""
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
 
     # 'ä' is 2 bytes in UTF-8; 20 of them = 40 bytes > 36
     title = "ä" * 20
-    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title)
+    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title, f64=False)
     dp = D3plot(str(tmp_path / "box.d3plot"))
 
     # The read-back title should fit within 36 chars (lasso reads 36)
@@ -478,7 +478,7 @@ def test_p2_non_ascii_long_title_truncation(tmp_path):
 
 
 def test_cli_title_truncation(tmp_path):
-    """CLI --title >36 chars must truncate, not crash."""
+    """CLI --title >36 chars must truncate, not crash (32-bit mode)."""
     from lasso.dyna import D3plot
 
     title_50 = "A" * 50
@@ -492,6 +492,7 @@ def test_cli_title_truncation(tmp_path):
             str(tmp_path / "box.d3plot"),
             "--title",
             title_50,
+            "--f32",
         ],
         capture_output=True,
         text=True,

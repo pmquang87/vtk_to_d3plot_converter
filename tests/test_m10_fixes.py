@@ -287,14 +287,18 @@ def test_zug_specific_energy_mapped(tmp_path):
     rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
     unmapped = [w for w in rep.warnings if "unmapped" in w.lower()]
     if unmapped:
-        assert "2DELEM_Specific_Energy" not in unmapped[0], "Specific energy should be mapped, not unmapped"
-    
+        assert "2DELEM_Specific_Energy" not in unmapped[0], (
+            "Specific energy should be mapped, not unmapped"
+        )
+
     dp = D3plot(str(tmp_path / "zug.d3plot"))
     ie = dp.arrays[ArrayType.element_shell_internal_energy]
     # State 2 has 2015.09
     assert ie.shape[0] > 2
     assert ie.shape[1] > 0
-    assert np.isclose(ie[2].max(), 2015.09, rtol=0.01), f"Expected max IE ≈ 2015.09, got {ie[2].max()}"
+    assert np.isclose(ie[2].max(), 2015.09, rtol=0.01), (
+        f"Expected max IE ≈ 2015.09, got {ie[2].max()}"
+    )
 
 
 # ── Fix 3: Title Budget ──

@@ -348,19 +348,19 @@ def test_p2_transliteration_full_german(tmp_path):
 
 
 def test_p2_many_umlauts_transliteration(tmp_path):
-    """20× 'ä' → 'ae'×20 = 40 chars → truncated to 36."""
+    """20× 'ä' → 'ae'×20 = 40 chars → truncated to 36 (32-bit mode)."""
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
 
     title = "ä" * 20  # transliterates to 'ae'*20 = 40 chars
-    convert(PORT_DIR, tmp_path / "box.d3plot", title=title)
+    convert(PORT_DIR, tmp_path / "box.d3plot", title=title, f64=False)
     dp = D3plot(str(tmp_path / "box.d3plot"))
 
     readback = dp.header.title.strip()
     # Must be pure ASCII
     readback.encode("ascii")  # should not raise
-    # Must fit in 36 readable chars
+    # Must fit in 36 readable chars (wordsize=4)
     assert len(readback) <= 36, f"Title too long: {len(readback)} chars"
     # Should contain 'ae' repeats, not empty
     assert len(readback) > 0, "Title should not be empty"
@@ -496,6 +496,7 @@ def test_p2_real_surrogate_does_not_crash(tmp_path):
     convert(PORT_DIR, tmp_path / "box.d3plot", title=title_with_surr)
     # Must not crash, and the title must start with 'test' and have a replacement char
     from lasso.dyna import D3plot
+
     dp = D3plot(str(tmp_path / "box.d3plot"))
     assert dp.header.title.startswith("test")
 

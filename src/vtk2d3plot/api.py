@@ -14,6 +14,7 @@ from pathlib import Path
 
 class WarningCode(str, Enum):
     """Machine-readable warning codes for pipeline integration."""
+
     NO_DISPLACEMENT = "NO_DISPLACEMENT"
     SYNTHETIC_STRESS = "SYNTHETIC_STRESS"
     SHELL_LOCAL_FRAME = "SHELL_LOCAL_FRAME"
@@ -26,12 +27,14 @@ class WarningCode(str, Enum):
     UNMAPPED_ARRAYS = "UNMAPPED_ARRAYS"
     TITLE_SANITIZED = "TITLE_SANITIZED"
     ZERO_FILL = "ZERO_FILL"
+    INVERTED_TETRAS = "INVERTED_TETRAS"
     OTHER = "OTHER"
 
 
 @dataclass
 class StructuredWarning:
     """A single warning with machine-readable code and human-readable message."""
+
     code: WarningCode
     message: str
 
@@ -51,6 +54,7 @@ class ConversionReport:
     n_beams: int
     n_parts: int
     dialect: str
+    n_inverted_tetras: int = 0
     warnings: list[str] = field(default_factory=list)
     structured_warnings: list[StructuredWarning] = field(default_factory=list)
 
@@ -69,9 +73,10 @@ def convert(
     output: str | Path,
     *,
     title: str = "",
-    f64: bool = False,
+    f64: bool = True,
     part_names: dict[int, str] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    rotate_shell_stress: bool = False,
 ) -> ConversionReport:
     """Convert a VTK time series to an LS-DYNA d3plot family.
 
@@ -86,7 +91,7 @@ def convert(
     title : str
         Optional title string embedded in the d3plot header.
     f64 : bool
-        If True, write 64-bit output (default: 32-bit).
+        If True, write 64-bit output (default: True).
 
     Returns
     -------
@@ -105,6 +110,7 @@ def convert(
         f64=f64,
         part_names=part_names,
         progress=progress,
+        rotate_shell_stress=rotate_shell_stress,
     )
 
     if model.n_skipped_cells > 0:
@@ -113,6 +119,11 @@ def convert(
             0,
             f"Skipped {model.n_skipped_cells} unsupported cells "
             f"(VTK types: {types_str}); these are not included in the d3plot",
+        )
+
+    if model.n_inverted_tetras > 0:
+        warn_list.append(
+            f"Fixed {model.n_inverted_tetras} tetras with negative volume by swapping nodes to match LS-DYNA winding order."
         )
 
     import re
@@ -144,7 +155,7 @@ def convert(
             # Move new files to temp names in the target dir first
             for f in Path(td).iterdir():
                 if f.is_file() and f.name.startswith("tmp.d3plot"):
-                    suffix = f.name[len("tmp.d3plot"):]
+                    suffix = f.name[len("tmp.d3plot") :]
                     tmp_target = out.parent / f"_vtk2d3plot_tmp_{out.name}{suffix}"
                     shutil.move(str(f), str(tmp_target))
                     new_tmp_files.append(tmp_target)
@@ -158,10 +169,10 @@ def convert(
 
             # Move the temps to final names
             for tmp_f in new_tmp_files:
-                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}"):]
+                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}") :]
                 final_name = out.parent / f"{out.name}{suffix}"
                 shutil.move(str(tmp_f), str(final_name))
-            
+
             # Success! Delete backups
             for bak in bak_files.values():
                 try:
@@ -180,7 +191,7 @@ def convert(
                     shutil.move(str(bak), str(orig))
                 except OSError:
                     pass
-        
+
         # Clean up any leftover tmp files
         for f in new_tmp_files:
             try:
@@ -188,12 +199,12 @@ def convert(
                     f.unlink()
             except OSError:
                 pass
-        
-        # Clean up final names if we were in the middle of replacing them, 
+
+        # Clean up final names if we were in the middle of replacing them,
         # but only if they weren't pre-existing (since backups restored those).
         if bak_files:
             for tmp_f in new_tmp_files:
-                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}"):]
+                suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}") :]
                 final_name = out.parent / f"{out.name}{suffix}"
                 try:
                     if final_name.exists() and final_name not in pre_existing:
@@ -230,6 +241,8 @@ def convert(
             code = WarningCode.TITLE_SANITIZED
         elif "zero-filled" in wl:
             code = WarningCode.ZERO_FILL
+        elif "fixed" in wl and "negative volume" in wl:
+            code = WarningCode.INVERTED_TETRAS
         else:
             code = WarningCode.OTHER
         structured.append(StructuredWarning(code=code, message=w))
@@ -243,6 +256,7 @@ def convert(
         n_beams=model.beam_conn.shape[0],
         n_parts=model.part_ids.shape[0],
         dialect=series.dialect,
+        n_inverted_tetras=model.n_inverted_tetras,
         warnings=warn_list,
         structured_warnings=structured,
     )

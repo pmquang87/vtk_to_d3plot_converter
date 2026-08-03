@@ -9,27 +9,106 @@ import numpy as np
 from .vtk_reader import VtkState, read_vtk
 
 
+def parse_pvd(path: Path) -> list[tuple[float, Path]]:
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(path)
+    root = tree.getroot()
+    if root.tag != "VTKFile" or root.attrib.get("type") != "Collection":
+        raise ValueError("Invalid PVD file")
+
+    collection = root.find("Collection")
+    if collection is None:
+        raise ValueError("Missing Collection element")
+
+    entries = []
+    parent_dir = path.parent
+    for dataset in collection.findall("DataSet"):
+        ts = float(dataset.attrib.get("timestep", 0.0))
+        file_name = dataset.attrib.get("file", "")
+        # Resolve relative path
+        if not Path(file_name).is_absolute():
+            vtu_path = parent_dir / file_name
+        else:
+            vtu_path = Path(file_name)
+        entries.append((ts, vtu_path))
+    entries.sort(key=lambda x: x[0])
+    return entries
+
+
+@dataclass
+class T01Data:
+    times: np.ndarray
+    columns: dict[str, np.ndarray]
+
+
 @dataclass
 class VtkSeries:
     states: list[VtkState]
     dialect: str
     times: np.ndarray
+    t01_data: T01Data | None = None
 
 
 class TopologyError(Exception):
     pass
 
 
+def find_t01_csv(vtk_paths: list[Path]) -> Path | None:
+    if not vtk_paths:
+        return None
+    stem_re = re.compile(r"^(.*?)A(\d+)\.vtk$", re.IGNORECASE)
+    match = stem_re.match(vtk_paths[0].name)
+    if not match:
+        return None
+    stem = match.group(1)
+    t01_path = vtk_paths[0].parent / f"{stem}T01.csv"
+    if t01_path.exists():
+        return t01_path
+    return None
+
+
+def parse_t01_csv(path: Path) -> T01Data:
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    header_line = lines[1].strip()
+    headers = [h.strip() for h in header_line.split(",")]
+
+    data = []
+    for line in lines[2:]:
+        line = line.strip()
+        if not line:
+            continue
+        data.append([float(x) for x in line.split(",")])
+
+    data = np.array(data)
+    if "TIME" not in headers:
+        raise ValueError("TIME column missing from T01 CSV")
+
+    time_idx = headers.index("TIME")
+    times = data[:, time_idx]
+
+    columns = {}
+    for i, h in enumerate(headers):
+        if h != "TIME":
+            columns[h] = data[:, i]
+
+    return T01Data(times=times, columns=columns)
+
+
 def load_series(
-    inputs: str | Path | Sequence[str | Path],
-    progress_cb: Callable[[int, int], None] | None = None
+    inputs: str | Path | Sequence[str | Path], progress_cb: Callable[[int, int], None] | None = None
 ) -> VtkSeries:
     if isinstance(inputs, (str, Path)):
         path = Path(inputs)
-        if path.is_dir():
-            files = list(path.glob("*.vtk"))
+        if path.suffix.lower() == ".pvd":
+            pvd_entries = parse_pvd(path)
+            paths = [e[1] for e in pvd_entries]
+        elif path.is_dir():
+            files = list(path.glob("*.vtk")) + list(path.glob("*.vtu"))
             paths = _sort_and_filter_files(files)
-        elif path.suffix.lower() == ".vtk":
+        elif path.suffix.lower() in (".vtk", ".vtu"):
             paths = [path]
         else:
             # Stem form
@@ -38,8 +117,9 @@ def load_series(
             if not parent.exists() and not path.is_absolute():
                 parent = Path(".")
 
-            pattern = re.compile(re.escape(stem) + r"A\d+\.vtk$", re.IGNORECASE)
-            files = [f for f in parent.glob("*.vtk") if pattern.match(f.name)]
+            pattern = re.compile(re.escape(stem) + r"A\d+\.(vtk|vtu)$", re.IGNORECASE)
+            files = [f for f in parent.glob("*.vtk")] + [f for f in parent.glob("*.vtu")]
+            files = [f for f in files if pattern.match(f.name)]
             paths = _sort_and_filter_files(files)
     elif isinstance(inputs, Sequence):
         paths = [Path(p) for p in inputs]
@@ -115,21 +195,24 @@ def load_series(
             ):
                 raise TopologyError(f"cell_data {field} mismatch in {fname}")
 
-    return VtkSeries(states=states, dialect=dialect, times=times)
+    t01_path = find_t01_csv(paths)
+    t01_data = parse_t01_csv(t01_path) if t01_path else None
+
+    return VtkSeries(states=states, dialect=dialect, times=times, t01_data=t01_data)
 
 
 def _sort_and_filter_files(files: list[Path]) -> list[Path]:
     if not files:
         return []
 
-    stem_re = re.compile(r"^(.*?)A(\d+)\.vtk$", re.IGNORECASE)
+    stem_re = re.compile(r"^(.*?)A(\d+)\.(vtk|vtu)$", re.IGNORECASE)
 
     parsed = []
     stems = set()
     for f in files:
         match = stem_re.match(f.name)
         if match:
-            s, num = match.groups()
+            s, num, _ = match.groups()
             stems.add(s)
             parsed.append((s, int(num), f))
         else:
@@ -161,6 +244,7 @@ class LazyVtkSeries:
     dialect: str
     times: np.ndarray
     _array_keys_cache: dict[str, set[str]] | None = None
+    t01_data: T01Data | None = None
 
     @property
     def n_states(self) -> int:
@@ -206,18 +290,22 @@ def load_series_lazy(
     """
     if isinstance(inputs, (str, Path)):
         path = Path(inputs)
-        if path.is_dir():
-            files = list(path.glob("*.vtk"))
+        if path.suffix.lower() == ".pvd":
+            pvd_entries = parse_pvd(path)
+            paths = [e[1] for e in pvd_entries]
+        elif path.is_dir():
+            files = list(path.glob("*.vtk")) + list(path.glob("*.vtu"))
             paths = _sort_and_filter_files(files)
-        elif path.suffix.lower() == ".vtk":
+        elif path.suffix.lower() in (".vtk", ".vtu"):
             paths = [path]
         else:
             parent = path.parent
             stem = path.name
             if not parent.exists() and not path.is_absolute():
                 parent = Path(".")
-            pattern = re.compile(re.escape(stem) + r"A\d+\.vtk$", re.IGNORECASE)
-            files = [f for f in parent.glob("*.vtk") if pattern.match(f.name)]
+            pattern = re.compile(re.escape(stem) + r"A\d+\.(vtk|vtu)$", re.IGNORECASE)
+            files = [f for f in parent.glob("*.vtk")] + [f for f in parent.glob("*.vtu")]
+            files = [f for f in files if pattern.match(f.name)]
             paths = _sort_and_filter_files(files)
     elif isinstance(inputs, Sequence):
         paths = [Path(p) for p in inputs]
@@ -273,9 +361,13 @@ def load_series_lazy(
     else:
         dialect = "unknown"
 
+    t01_path = find_t01_csv(paths)
+    t01_data = parse_t01_csv(t01_path) if t01_path else None
+
     return LazyVtkSeries(
         state0=state0,
         paths=paths,
         dialect=dialect,
         times=times,
+        t01_data=t01_data,
     )

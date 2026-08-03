@@ -237,17 +237,17 @@ def test_n1_partial_layer_fill_warning(tmp_path):
 
 
 def test_n3_title_over_40_chars(tmp_path):
-    """A 50-char title must not crash; truncated to 36 with warning."""
+    """A 50-char title must not crash; truncated to 36 with warning (32-bit mode)."""
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
 
     title_50 = "A" * 50
-    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title_50)
+    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title_50, f64=False)
     dp = D3plot(str(tmp_path / "box.d3plot"))
 
     # Must not crash (implicit: we got here)
-    # Title should be truncated to 36 chars
+    # Title should be truncated to 36 chars (wordsize=4)
     assert dp.header.title.strip() == "A" * 36
     # Warning about truncation
     assert any("truncat" in w.lower() for w in rep.warnings), (
@@ -256,13 +256,13 @@ def test_n3_title_over_40_chars(tmp_path):
 
 
 def test_n3_title_37_chars(tmp_path):
-    """A 37-char title must be truncated to 36 with warning."""
+    """A 37-char title must be truncated to 36 with warning (32-bit mode)."""
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
 
     title_37 = "B" * 37
-    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title_37)
+    rep = convert(PORT_DIR, tmp_path / "box.d3plot", title=title_37, f64=False)
     dp = D3plot(str(tmp_path / "box.d3plot"))
     assert dp.header.title.strip() == "B" * 36
     assert any("truncat" in w.lower() for w in rep.warnings)

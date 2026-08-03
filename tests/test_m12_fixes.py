@@ -33,9 +33,9 @@ def test_zug_strain_2layer_not_membrane(tmp_path):
     # The membrane branch emits "shell strain from 2DELEM_Strain_(membrane)"
     # Verify the 2-layer branch executed:
     strain_warns = [w for w in rep.warnings if "shell strain" in w]
-    assert any("element-local" in w and "2DELEM_Strain_(membrane)" not in w for w in strain_warns), (
-        f"Expected 2-layer strain warning, not membrane. Got: {strain_warns}"
-    )
+    assert any(
+        "element-local" in w and "2DELEM_Strain_(membrane)" not in w for w in strain_warns
+    ), f"Expected 2-layer strain warning, not membrane. Got: {strain_warns}"
 
     # Pin zug element_shell_strain against the actual output VALUES to prevent regression.
     # We do not use np.allclose against the Vortex golden because it uses the global coordinate frame,
@@ -52,7 +52,8 @@ def test_zug_strain_local_frame_warning(tmp_path):
 
     rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
     assert any(
-        "shell strain" in w and "element-local" in w and "principal invariants are exact" in w for w in rep.warnings
+        "shell strain" in w and "element-local" in w and "principal invariants are exact" in w
+        for w in rep.warnings
     ), f"Expected full local-frame warning for strain, got: {rep.warnings}"
 
 
@@ -96,18 +97,19 @@ def test_fill_warning_missing_state_injection(tmp_path):
 
     from vtk2d3plot import series
     from vtk2d3plot.api import convert
-    
+
     original_read = series.load_series
+
     def mock_read(path, **kwargs):
         s = original_read(path)
         # Delete thickness from the last state
         if "2DELEM_Thickness" in s.states[-1].cell_data:
             del s.states[-1].cell_data["2DELEM_Thickness"]
         return s
-        
+
     with patch("vtk2d3plot.series.load_series", side_effect=mock_read):
         rep = convert(TENSILE_DIR, tmp_path / "missing.d3plot")
-        
+
     # We expect a warning about element_shell_thickness being zero-filled
     warns = [w for w in rep.warnings if "zero-filled" in w and "element_shell_thickness" in w]
     assert len(warns) == 1, "Must emit exactly one zero-fill warning for thickness"
@@ -134,6 +136,7 @@ def test_atomic_case_insensitive_cleanup(tmp_path):
     # case-insensitively. On Linux this test is still valid (it just won't match,
     # but the test asserts the regex has IGNORECASE which is correct behavior).
     import sys
+
     if sys.platform == "win32":
         assert not stale.exists(), "Case-different stale file should be removed on Windows"
 
@@ -146,32 +149,33 @@ def test_atomic_locked_file_injection(tmp_path):
     from conftest import PORT_DIR
 
     from vtk2d3plot.api import convert
-    
+
     out = tmp_path / "box.d3plot"
     out01 = tmp_path / "box.d3plot01"
-    
+
     # First write
     convert(PORT_DIR, out)
     assert out.exists()
     assert out01.exists()
-    
+
     orig_out_stat = out.stat().st_mtime
-    
+
     # Second write, but we inject a failure in shutil.move when moving tmp_target_base to out
     original_move = shutil.move
+
     def failing_move(src, dst):
         if "box.d3plot" in str(dst) and "_vtk2d3plot_tmp_" in str(src):
             raise OSError("Simulated lock by LS-PrePost")
         return original_move(src, dst)
-        
+
     with patch("shutil.move", side_effect=failing_move), pytest.raises(OSError):
         convert(PORT_DIR, out)
-            
+
     # Assert original files survived exactly as they were
     assert out.exists()
     assert out.stat().st_mtime == orig_out_stat
     assert out01.exists()
-    
+
     # Assert no _vtk2d3plot_tmp_ files leaked
     tmp_files = list(tmp_path.glob("_vtk2d3plot_tmp_*"))
     assert not tmp_files, f"Leaked tmp files: {tmp_files}"
@@ -192,12 +196,13 @@ def test_alive_warning_names_erosion_status(tmp_path):
     from vtk2d3plot.api import convert
 
     original_load = series.load_series
+
     def mock_load(path, **kwargs):
         s = original_load(path)
         if "EROSION_STATUS" in s.states[-1].cell_data:
             del s.states[-1].cell_data["EROSION_STATUS"]
         return s
-    
+
     with unittest.mock.patch("vtk2d3plot.series.load_series", side_effect=mock_load):
         rep = convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
 
@@ -283,7 +288,7 @@ def test_f64_wordsize_8_pin(tmp_path):
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
-    
+
     convert(TENSILE_DIR, tmp_path / "tensile.d3plot", f64=True)
     dp = D3plot(str(tmp_path / "tensile.d3plot"))
     assert dp.header.wordsize == 8, "f64 output requires wordsize=8"
@@ -297,11 +302,11 @@ def test_latch_pins_erosion(tmp_path):
     from lasso.dyna import ArrayType, D3plot
 
     from vtk2d3plot.api import convert
-    
+
     convert(GOLDEN_ZUG_VTK, tmp_path / "zug.d3plot")
     new_dp = D3plot(str(tmp_path / "zug.d3plot"))
     gold_dp = D3plot(str(GOLDEN_ZUG_D3 / "zug_test3_RS.d3plot"))
-    
+
     new_alive = new_dp.arrays[ArrayType.element_shell_is_alive]
     gold_alive = gold_dp.arrays[ArrayType.element_shell_is_alive]
     np.testing.assert_array_equal(new_alive, gold_alive)
@@ -313,7 +318,7 @@ def test_lasso_mdlopt_pin(tmp_path):
     from lasso.dyna import D3plot
 
     from vtk2d3plot.api import convert
-    
+
     convert(TENSILE_DIR, tmp_path / "tensile.d3plot")
     dp = D3plot(str(tmp_path / "tensile.d3plot"))
     # We omit the exact mdlopt check because lasso 2.0.4 hides it,
@@ -325,13 +330,20 @@ def test_lasso_mdlopt_pin(tmp_path):
 # Golden Manifest test
 # ================================================================
 
+
 def test_golden_manifest():
     """Verify golden manifest."""
     import subprocess
 
     from conftest import REPO, VENV_PY
-    
-    proc = subprocess.run([str(VENV_PY), "tools/golden_manifest.py", "verify"], cwd=str(REPO), capture_output=True, text=True)
+
+    proc = subprocess.run(
+        [str(VENV_PY), "tools/golden_manifest.py", "verify"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert proc.returncode == 0, f"Golden manifest verification failed: {proc.stderr}"
 
 
@@ -346,15 +358,21 @@ def test_lspp_check_renders_last_state(tmp_path):
     import subprocess
 
     from conftest import GOLDEN_ZUG_D3, VENV_PY
-    
+
     png = tmp_path / "out.png"
     # We call it as a script to verify the CLI works
-    subprocess.run([
-        str(VENV_PY), "tools/lspp_check.py", 
-        str(GOLDEN_ZUG_D3 / "zug_test3_RS.d3plot"), 
-        "--fringe", "vonmises", 
-        "--png", str(png)
-    ], check=True)
-    
+    subprocess.run(
+        [
+            str(VENV_PY),
+            "tools/lspp_check.py",
+            str(GOLDEN_ZUG_D3 / "zug_test3_RS.d3plot"),
+            "--fringe",
+            "vonmises",
+            "--png",
+            str(png),
+        ],
+        check=True,
+    )
+
     assert png.exists()
     assert png.stat().st_size > 5000, "PNG file is suspiciously small"

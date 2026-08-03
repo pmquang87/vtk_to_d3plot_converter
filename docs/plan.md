@@ -509,13 +509,21 @@ def test_pyradioss_run_and_convert(tmp_path):
   pyradioss invocation: `python -m pyradioss.starter` / `.engine` works as modules.
 - [x] **M5.6 Commit** `feat(m5): CLI, pyradioss end-to-end loop, robustness`.
 
-## Post-v1 backlog (do NOT implement now)
+## Post-v1 backlog
 
-- Global variables from `{run}T01.csv` (resample /TFILE dt → state times).
-- Full shell stress tensors from pyradioss via upstream `anim_vtk.py` patch
-  (port emits only VONM today; the patch sketch lives in `docs/vtk_input_spec.md`).
-- `EROSION_STATUS` semantics resolution (needs a with-failure official run).
-- SPH (lasso writer bug #101), thick shells, 64-bit default, `.pvd`/XML `.vtu` input.
+- [x] Global variables from `{run}T01.csv` (resample /TFILE dt → state times).
+- [x] Full shell stress tensors from pyradioss via upstream `anim_vtk.py` patch
+  (port emits full tensors since M42; converter now supports local→global rotation
+  via `--rotate-shell-stress` flag).
+- [x] `EROSION_STATUS` semantics resolution — **RESOLVED**: 1=alive, 0=dead,
+  same polarity as OFF. Written for all element families. Current code correct.
+- [ ] SPH — **BLOCKED**: lasso writer bug #101 prevents SPH state writing
+  (critical bugs in `_write_states_sph`). Cannot implement until lasso is fixed.
+- [ ] Thick shells — **N/A**: pyradioss/OpenRadioss VTK output does not emit thick
+  shell element groups; all 8-node volumes are standard solids.
+- [x] 64-bit default — default output changed to f64.
+- [x] `.pvd`/XML `.vtu` input — VTU reader and PVD manifest parser added.
+
 
 ## Self-review notes (already applied)
 

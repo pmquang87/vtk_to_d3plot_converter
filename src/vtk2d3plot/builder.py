@@ -9,6 +9,7 @@ from lasso.dyna import ArrayType, D3plot
 
 from .mapping import MappedModel
 from .series import VtkSeries
+from .shell_rotation import compute_shell_local_frames, rotate_stress_to_global
 
 
 def _find_key(d: dict, name: str) -> str | None:
@@ -108,6 +109,7 @@ def build_d3plot(
     f64: bool = False,
     part_names: dict[int, str] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    rotate_shell_stress: bool = False,
 ) -> tuple[D3plot, list[str]]:
     ftype = np.float64 if f64 else np.float32
     itype = np.int64 if f64 else np.int32
@@ -221,8 +223,12 @@ def build_d3plot(
     has_epsp = _any_state_has(series, "EPSP")
     # --- Port: OFF (element alive) ---
     has_off = _any_state_has(series, "OFF")
-    # --- Official: EROSION_STATUS (1=alive, 0=eroded) ---
+    # --- Official: EROSION_STATUS (1=alive, 0=eroded) — RESOLVED from anim_to_vtk.cpp:
+    #     Written for ALL families (solids, shells, beams, trusses, springs).
+    #     Same polarity as OFF in pyradioss. Elements in rigid/unintegrated parts
+    #     may emit 0 from state 0 (handled by the ever_alive logic below).
     has_erosion_status = _any_state_has(series, "EROSION_STATUS")
+
     # --- Official: shell strain tensor (upper/lower layers) — M12 S1: 2-layer wins ---
     has_shell_strain_2layer = n_shells > 0 and (
         _any_state_has(series, "2DELEM_Strain_(lower)")
@@ -245,8 +251,14 @@ def build_d3plot(
         and not has_shell_strain_lower_only
         and _any_state_has(series, "2DELEM_Strain_(membrane)")
     )
-    if n_shells > 0 and _any_state_has(series, "2DELEM_Strain_(membrane)") and not has_shell_strain_membrane:
-        warn_list.append("2DELEM_Strain_(membrane) ignored because upper/lower layers were also found")
+    if (
+        n_shells > 0
+        and _any_state_has(series, "2DELEM_Strain_(membrane)")
+        and not has_shell_strain_membrane
+    ):
+        warn_list.append(
+            "2DELEM_Strain_(membrane) ignored because upper/lower layers were also found"
+        )
 
     # --- Official: solid strain tensor ---
     has_solid_strain = n_solids > 0 and _any_state_has(series, "3DELEM_Strain")
@@ -258,9 +270,7 @@ def build_d3plot(
     has_solid_internal_energy = n_solids > 0 and _any_state_has(series, "3DELEM_Specific_Energy")
     # --- Official: 3DELEM_Von_Mises scalar (fallback for solid stress) ---
     has_solid_vonmises = n_solids > 0 and (
-        not has_solid_stress
-        and not has_vonm
-        and _any_state_has(series, "3DELEM_Von_Mises")
+        not has_solid_stress and not has_vonm and _any_state_has(series, "3DELEM_Von_Mises")
     )
 
     # Shell stress layers count (from stress source)
@@ -292,9 +302,7 @@ def build_d3plot(
 
     # Shell strain layers count
     if has_shell_strain_2layer or (
-        has_shell_strain_upper_only
-        or has_shell_strain_lower_only
-        or has_shell_strain_membrane
+        has_shell_strain_upper_only or has_shell_strain_lower_only or has_shell_strain_membrane
     ):
         strain_layers = 2
     else:
@@ -434,6 +442,26 @@ def build_d3plot(
             else:
                 shell_stress_fill.append(i)
 
+    if shell_stress is not None and rotate_shell_stress:
+        for i, state in enumerate(series.states):
+            R = compute_shell_local_frames(state.points, model.shell_conn)
+            shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
+
+        for w_idx in range(len(warn_list)):
+            if "shell stress" in warn_list[w_idx] or "2DELEM_Stress" in warn_list[w_idx]:
+                warn_list[w_idx] = (
+                    warn_list[w_idx]
+                    .replace(
+                        "element-local coordinates (from anim_to_vtk); von Mises / principal invariants are exact, but raw component values differ from global frame",
+                        "rotated to global frame (using standard diagonal-based local frame)",
+                    )
+                    .replace(
+                        "element-local coordinates; von Mises / principal invariants are exact",
+                        "rotated to global frame",
+                    )
+                    .replace(", element-local coordinates", ", rotated to global frame")
+                )
+
     # ================================================================
     # === Solid plastic strain (n_states, n_solids, 1) ===
     # ================================================================
@@ -476,7 +504,9 @@ def build_d3plot(
     solid_history_vars = None
     solid_history_vars_fill: list[int] = []
     if has_solid_internal_energy:
-        warn_list.append("solid internal energy mapped to element_solid_history_variables (index 0)")
+        warn_list.append(
+            "solid internal energy mapped to element_solid_history_variables (index 0)"
+        )
         solid_history_vars = np.zeros((n_states, n_solids, 1, 1), dtype=ftype)
         for i, state in enumerate(series.states):
             if "3DELEM_Specific_Energy" in state.cell_data:
@@ -738,14 +768,14 @@ def build_d3plot(
                 # M12 fix: compute ever_alive only over states with real data
                 # (not filled states which default to 1.0)
                 fill_set = set(fill_list)
-                present_mask = np.array(
-                    [si not in fill_set for si in range(n_states)], dtype=bool
-                )
+                present_mask = np.array([si not in fill_set for si in range(n_states)], dtype=bool)
                 if present_mask.any():
                     ever_alive = np.any(alive_arr[present_mask] == 1.0, axis=0)
                 else:
                     ever_alive = np.ones(alive_arr.shape[1], dtype=bool)
-                never_alive_mask = ~ever_alive  # elements with EROSION_STATUS=0 in every present state
+                never_alive_mask = (
+                    ~ever_alive
+                )  # elements with EROSION_STATUS=0 in every present state
                 n_never = int(never_alive_mask.sum())
                 if n_never > 0:
                     # Force never-alive elements to alive (they are rigid/non-integrated)
@@ -932,6 +962,21 @@ def build_d3plot(
         items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unmapped.items()))
         warn_list.append(f"unmapped arrays ignored: {items}")
 
+    # T01 global variables
+    ie_resampled = None
+    ke_resampled = None
+    en_resampled = None
+    if hasattr(series, "t01_data") and series.t01_data is not None:
+        t01 = series.t01_data
+        # Resample T01 columns at VTK state times
+        if "IE" in t01.columns:
+            ie_resampled = np.interp(series.times, t01.times, t01.columns["IE"]).astype(ftype)
+        if "KE" in t01.columns:
+            ke_resampled = np.interp(series.times, t01.times, t01.columns["KE"]).astype(ftype)
+        # EN = total energy
+        if "EN" in t01.columns:
+            en_resampled = np.interp(series.times, t01.times, t01.columns["EN"]).astype(ftype)
+
     # ----------------------------------------------------------------
     # Assemble D3plot
     # ----------------------------------------------------------------
@@ -968,6 +1013,13 @@ def build_d3plot(
         a[ArrayType.part_titles] = np.array([b"Part %d" % int(pid) for pid in model.part_ids])
 
     a[ArrayType.global_timesteps] = series.times.astype(ftype)
+    if ie_resampled is not None:
+        a[ArrayType.global_internal_energy] = ie_resampled
+    if ke_resampled is not None:
+        a[ArrayType.global_kinetic_energy] = ke_resampled
+    if en_resampled is not None:
+        a[ArrayType.global_total_energy] = en_resampled
+
     a[ArrayType.node_displacement] = node_disp
 
     if node_vel is not None:

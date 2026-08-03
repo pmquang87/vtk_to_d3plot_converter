@@ -68,9 +68,11 @@ these automatically (they make a port file look like an official file).
   orientation lost!).
 - IDs: `POINT_DATA SCALARS NODE_ID int 1`, `CELL_DATA SCALARS ELEMENT_ID int
   1`, `SCALARS PART_ID int 1`.
-- `SCALARS EROSION_STATUS int 1` — **semantics unverified**: a no-fail run
-  shows 3154 zeros at t=0 (all in the 2D block), so 0 ≠ deleted. Do not map
-  until resolved against a with-failure run.
+- `SCALARS EROSION_STATUS int 1` — **semantics RESOLVED**: 1=alive, 0=eroded/deleted.
+  Same polarity as pyradioss `OFF`. Written for ALL element families (solids,
+  shells, beams, trusses, springs). Elements in rigid/unintegrated parts may
+  emit 0 from state 0 (handled by ever_alive logic in builder.py).
+
 - Result arrays family-prefixed, names from the ANIM text fields (do not
   hardcode; underscores replace blanks): `1DELEM_*`, `2DELEM_{Plastic_Strain,
   Specific_Energy, Von_Mises, ...}`, `3DELEM_*`, plus
