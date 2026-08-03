@@ -5,8 +5,9 @@ Milestone 2: working convert() pipeline with geometry + kinematics.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -23,6 +24,12 @@ class ConversionReport:
     n_parts: int
     dialect: str
     warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
 
 
 def convert(
@@ -60,7 +67,12 @@ def convert(
     series = load_series(inputs)
     model = map_topology(series.states[0])
     d3, warn_list = build_d3plot(
-        series, model, title=title, f64=f64, part_names=part_names, progress=progress,
+        series,
+        model,
+        title=title,
+        f64=f64,
+        part_names=part_names,
+        progress=progress,
     )
 
     if model.n_skipped_cells > 0:

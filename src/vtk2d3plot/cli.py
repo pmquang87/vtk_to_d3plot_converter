@@ -53,6 +53,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Suppress informational output (only errors).",
     )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output machine-readable JSON report.",
+    )
     return ap
 
 
@@ -130,7 +136,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # Per-state progress callback for non-quiet mode
     progress_fn = None
-    if not args.quiet:
+    if not args.quiet and not args.json:
+
         def progress_fn(state_index: int, n_states: int) -> None:
             print(f"  Processing state {state_index + 1}/{n_states}...")
 
@@ -147,7 +154,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    if not args.quiet:
+    if args.json:
+        print(rep.to_json())
+    elif not args.quiet:
         print(f"Wrote {rep.output} and {rep.output}01")
         print(
             f"  {rep.n_states} states, {rep.n_nodes} nodes, "

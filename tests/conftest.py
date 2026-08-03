@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-VENV_PY = REPO / ".venv" / "Scripts" / "python.exe"
+VENV_PY = Path(sys.executable)
 
 # repo root importable so `from tools.lspp_check import check_d3plot` works
 if str(REPO) not in sys.path:
@@ -23,6 +23,7 @@ GOLDEN_ZUG = DATA / "golden" / "zug_test3_RS"
 GOLDEN_ZUG_VTK = GOLDEN_ZUG / "vtk"
 GOLDEN_ZUG_D3 = GOLDEN_ZUG / "d3plot"
 TENSILE_DIR = DATA / "golden" / "TENSILE_vtk_only"
+W3_DIR = DATA / "golden" / "W3_SETUP_Ball_impact__ton-mm-s" / "vtk"
 
 
 def lspp_available() -> bool:

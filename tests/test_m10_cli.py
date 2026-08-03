@@ -95,4 +95,3 @@ def test_cli_per_state_progress(tmp_path):
     assert "Processing state 1/" in r.stdout, (
         f"Expected per-state progress in stdout; got:\n{r.stdout}"
     )
-

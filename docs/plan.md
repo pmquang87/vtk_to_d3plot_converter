@@ -32,6 +32,13 @@ title tests, stress/eps lower-only value tests, de-vacuous M8 P2 test,
 cp1252/BOM part-names encoding tolerance, OFF+EROSION coexistence warning,
 CLI title degeneration ('vtk'→parent dir).
 
+[x] **Milestone 11: Improvement Roadmap Tier-2 + Tier-4**  
+New array mappings: shell strain tensor (2DELEM_Strain membrane/upper/lower),
+shell thickness (2DELEM_Thickness), node acceleration. Infrastructure:
+CI GitHub Actions (conftest sys.executable), JSON ConversionReport (to_dict/
+to_json + CLI --json), golden manifest (SHA-256 checksums), lasso pitfall
+tests (shape mismatch, nmmat, absolute coords).
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that
