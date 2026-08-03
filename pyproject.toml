@@ -36,6 +36,7 @@ markers = [
     "milestone9: fix round M9 (R1/R2/P2 fixes) + hardened tests",
     "milestone10: fix round M10 (erosion latch, title budget, etc)",
     "milestone11: infra, CI, golden manifest, json report",
+    "milestone12: fix round M12 (S1 strain path, S2 fill warnings, T5 atomic, etc)",
     "roadmap_tier1: Tier-1 roadmap items (EROSION_STATUS, unmapped warnings, etc.)",
     "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
     "pyradioss: needs the pyradioss package (auto-skipped otherwise)",

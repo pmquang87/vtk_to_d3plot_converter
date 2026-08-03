@@ -39,6 +39,14 @@ CI GitHub Actions (conftest sys.executable), JSON ConversionReport (to_dict/
 to_json + CLI --json), golden manifest (SHA-256 checksums), lasso pitfall
 tests (shape mismatch, nmmat, absolute coords).
 
+[x] **Milestone 12: Fix Round M12 (Post-M10/M11-verification)**  
+Fix S1 (shell strain: 2-layer wins over membrane, _only flags), S2 (zero-fill
+warnings for strain/thickness/acceleration/velocity), T5 (atomic write
+window + case-insensitive regex), lspp_check last-state (concrete `state N;`
+instead of no-op `state last;`), is_alive warning names actual source array,
+ever_alive computed only over present states, solid strain mapping
+(3DELEM_Strain recognition), test hardening with value pins.
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that

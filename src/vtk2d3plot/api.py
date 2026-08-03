@@ -108,23 +108,32 @@ def convert(
             tmp_base = Path(td) / "tmp.d3plot"
             d3.write_d3plot(str(tmp_base))
 
+            # Move new files to temp names in the target dir first
+            tmp_target_base = out.parent / f"_vtk2d3plot_tmp_{out.name}"
+            shutil.move(str(tmp_base), str(tmp_target_base))
+            
+            tmp_states = Path(td) / "tmp.d3plot01"
+            tmp_target_states = out.parent / f"_vtk2d3plot_tmp_{out.name}01"
+            if tmp_states.exists():
+                shutil.move(str(tmp_states), str(tmp_target_states))
+
             # Remove stale family members from a previous run.
             # Use re.escape to handle special chars (brackets, etc.) in the name.
             # Match the base name followed by one or more digits.
             escaped = re.escape(out.name)
-            pattern = re.compile(f"^{escaped}(\\d+)$")
+            pattern = re.compile(f"^{escaped}(\\d+)$", re.IGNORECASE)
             for f in sorted(out.parent.iterdir()):
                 if f.is_file() and pattern.match(f.name):
                     f.unlink()
             if out.exists():
                 out.unlink()
 
-            # Move the new files
-            shutil.move(str(tmp_base), str(out))
+            # Move the temps to final names
+            shutil.move(str(tmp_target_base), str(out))
             files_created.append(out)
-            tmp_states = Path(td) / "tmp.d3plot01"
-            if tmp_states.exists():
-                shutil.move(str(tmp_states), str(out.parent / f"{out.name}01"))
+            
+            if tmp_target_states.exists():
+                shutil.move(str(tmp_target_states), str(out.parent / f"{out.name}01"))
                 files_created.append(out.parent / f"{out.name}01")
     except Exception:
         # Clean up ONLY files this run created (not pre-existing ones)

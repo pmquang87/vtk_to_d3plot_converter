@@ -74,8 +74,16 @@ def check_d3plot(
         if state is not None:
             lines.append(f"state {state};")
         else:
-            # Default to last state — most interesting for post-processing
-            lines.append("state last;")
+            # Resolve state count from the d3plot for a concrete state command.
+            # 'state last;' is a silent LS-PrePost no-op.
+            try:
+                from lasso.dyna import ArrayType, D3plot as _D3plot
+                _dp = _D3plot(str(d3))
+                _ts = _dp.arrays.get(ArrayType.global_timesteps)
+                _n = len(_ts) if _ts is not None else 1
+            except Exception:
+                _n = 1
+            lines.append(f"state {_n};")
         lines += [f"fringe {FRINGE_IDS.get(fringe, fringe)}", "pfringe",
                   "range actele;", "isometric x"]
     if png:

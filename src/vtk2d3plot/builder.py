@@ -144,20 +144,26 @@ def build_d3plot(
         node_disp[i] = state.points.astype(ftype)
 
     node_vel = None
+    node_vel_fill: list[int] = []
     if any(_find_key(s.point_data, "VELOCITY") for s in series.states):
         node_vel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
         for i, state in enumerate(series.states):
             vk = _find_key(state.point_data, "VELOCITY")
             if vk is not None:
                 node_vel[i] = state.point_data[vk].astype(ftype)
+            else:
+                node_vel_fill.append(i)
 
     node_accel = None
+    node_accel_fill: list[int] = []
     if any(_find_key(s.point_data, "ACCELERATION") for s in series.states):
         node_accel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
         for i, state in enumerate(series.states):
             ak = _find_key(state.point_data, "ACCELERATION")
             if ak is not None:
                 node_accel[i] = state.point_data[ak].astype(ftype)
+            else:
+                node_accel_fill.append(i)
 
     # ----------------------------------------------------------------
     # Element results: detect which arrays are present (M3: union over ALL states)
@@ -217,13 +223,30 @@ def build_d3plot(
     has_off = _any_state_has(series, "OFF")
     # --- Official: EROSION_STATUS (1=alive, 0=eroded) ---
     has_erosion_status = _any_state_has(series, "EROSION_STATUS")
-    # --- Official: shell strain tensor (membrane — single layer) ---
-    has_shell_strain_membrane = n_shells > 0 and _any_state_has(series, "2DELEM_Strain_(membrane)")
-    # --- Official: shell strain tensor (upper/lower layers) ---
+    # --- Official: shell strain tensor (upper/lower layers) — M12 S1: 2-layer wins ---
     has_shell_strain_2layer = n_shells > 0 and (
         _any_state_has(series, "2DELEM_Strain_(lower)")
         and _any_state_has(series, "2DELEM_Strain_(upper)")
     )
+    # --- M12 S1: single-layer-only strain (mirror stress _only flags) ---
+    has_shell_strain_upper_only = n_shells > 0 and (
+        not has_shell_strain_2layer and _any_state_has(series, "2DELEM_Strain_(upper)")
+    )
+    has_shell_strain_lower_only = n_shells > 0 and (
+        not has_shell_strain_2layer
+        and not has_shell_strain_upper_only
+        and _any_state_has(series, "2DELEM_Strain_(lower)")
+    )
+    # --- Official: shell strain tensor (membrane — single layer) ---
+    # M12 S1: membrane now falls AFTER 2-layer + _only flags
+    has_shell_strain_membrane = n_shells > 0 and (
+        not has_shell_strain_2layer
+        and not has_shell_strain_upper_only
+        and not has_shell_strain_lower_only
+        and _any_state_has(series, "2DELEM_Strain_(membrane)")
+    )
+    # --- Official: solid strain tensor ---
+    has_solid_strain = n_solids > 0 and _any_state_has(series, "3DELEM_Strain")
     # --- Official: shell thickness ---
     has_shell_thickness = n_shells > 0 and _any_state_has(series, "2DELEM_Thickness")
 
@@ -257,7 +280,11 @@ def build_d3plot(
     # Shell strain layers count
     if has_shell_strain_2layer:
         strain_layers = 2
-    elif has_shell_strain_membrane:
+    elif (
+        has_shell_strain_upper_only
+        or has_shell_strain_lower_only
+        or has_shell_strain_membrane
+    ):
         strain_layers = 1
     else:
         strain_layers = 0
@@ -488,30 +515,89 @@ def build_d3plot(
     # ================================================================
     # === Shell strain tensor (n_states, n_shells, 2, 6) ===
     # ================================================================
-    # lasso requires shell_strain to always have 2 layers (lower/upper)
+    # M12 S1: 2-layer wins over membrane (mirror stress precedence)
     shell_strain = None
-    if has_shell_strain_membrane:
+    shell_strain_fill: list = []
+    if has_shell_strain_2layer:
         shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        for i, state in enumerate(series.states):
+            lo_present = "2DELEM_Strain_(lower)" in state.cell_data
+            hi_present = "2DELEM_Strain_(upper)" in state.cell_data
+            if lo_present:
+                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+                shell_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
+            if hi_present:
+                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+                shell_strain[i, :, 1, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
+        # M12: local-frame warning for strain (M1 class)
+        warn_list.append(
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+    elif has_shell_strain_upper_only:
+        # M12 S1: only upper strain exists — map into layer 1
+        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Strain_(upper) found (lower missing from all states); "
+            "mapped to layer 1, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Strain_(upper)" in state.cell_data:
+                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+                shell_strain[i, :, 1, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_strain_fill.append(i)
+    elif has_shell_strain_lower_only:
+        # M12 S1: only lower strain exists — map into layer 0
+        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Strain_(lower) found (upper missing from all states); "
+            "mapped to layer 0, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Strain_(lower)" in state.cell_data:
+                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+                shell_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                shell_strain_fill.append(i)
+    elif has_shell_strain_membrane:
+        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+        warn_list.append(
+            "shell strain from 2DELEM_Strain_(membrane) — single layer, element-local coordinates"
+        )
         for i, state in enumerate(series.states):
             if "2DELEM_Strain_(membrane)" in state.cell_data:
                 t = state.cell_data["2DELEM_Strain_(membrane)"][model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
                 shell_strain[i, :, 1, :] = voigt
-    elif has_shell_strain_2layer:
-        shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+            else:
+                shell_strain_fill.append(i)
+
+    # ================================================================
+    # === Solid strain tensor (n_states, n_solids, 1, 6) ===
+    # ================================================================
+    solid_strain = None
+    solid_strain_fill: list[int] = []
+    if has_solid_strain:
+        solid_strain = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(lower)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
-                shell_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
-            if "2DELEM_Strain_(upper)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                shell_strain[i, :, 1, :] = _tensor_to_voigt(t).astype(ftype)
+            if "3DELEM_Strain" in state.cell_data:
+                t = state.cell_data["3DELEM_Strain"][model.solid_src]  # (n_solids, 3, 3)
+                solid_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+            else:
+                solid_strain_fill.append(i)
 
     # ================================================================
     # === Shell thickness (n_states, n_shells) ===
     # ================================================================
     shell_thickness = None
+    shell_thickness_fill: list[int] = []
     if has_shell_thickness:
         shell_thickness = np.zeros((n_states, n_shells), dtype=ftype)
         for i, state in enumerate(series.states):
@@ -519,6 +605,8 @@ def build_d3plot(
                 shell_thickness[i, :] = state.cell_data["2DELEM_Thickness"][model.shell_src].astype(
                     ftype
                 )
+            else:
+                shell_thickness_fill.append(i)
 
     # ================================================================
     # === Element alive (from OFF or EROSION_STATUS) — M6 fix: added beam alive ===
@@ -569,16 +657,24 @@ def build_d3plot(
                     beam_alive_fill.append(i)
 
         if alive_key == "EROSION_STATUS":
-            for alive_arr, src_arr, type_name in [
-                (shell_alive, model.shell_src, "shell"),
-                (solid_alive, model.solid_src, "solid"),
-                (beam_alive, model.beam_src, "beam"),
+            for alive_arr, src_arr, fill_list, type_name in [
+                (shell_alive, model.shell_src, shell_alive_fill, "shell"),
+                (solid_alive, model.solid_src, solid_alive_fill, "solid"),
+                (beam_alive, model.beam_src, beam_alive_fill, "beam"),
             ]:
                 if alive_arr is None:
                     continue
-                # Step 1: Find elements NEVER alive (=0 in all states, never =1)
-                ever_alive = np.any(alive_arr == 1.0, axis=0)  # (n_elems,)
-                never_alive_mask = ~ever_alive  # elements with EROSION_STATUS=0 in every state
+                # M12 fix: compute ever_alive only over states with real data
+                # (not filled states which default to 1.0)
+                fill_set = set(fill_list)
+                present_mask = np.array(
+                    [si not in fill_set for si in range(n_states)], dtype=bool
+                )
+                if present_mask.any():
+                    ever_alive = np.any(alive_arr[present_mask] == 1.0, axis=0)
+                else:
+                    ever_alive = np.ones(alive_arr.shape[1], dtype=bool)
+                never_alive_mask = ~ever_alive  # elements with EROSION_STATUS=0 in every present state
                 n_never = int(never_alive_mask.sum())
                 if n_never > 0:
                     # Force never-alive elements to alive (they are rigid/non-integrated)
@@ -616,6 +712,10 @@ def build_d3plot(
     _simple_fills = [
         ("element_solid_stress", solid_stress_fill),
         ("element_solid_effective_plastic_strain", solid_eps_fill),
+        ("element_solid_strain", solid_strain_fill),
+        ("element_shell_thickness", shell_thickness_fill),
+        ("node_velocity", node_vel_fill),
+        ("node_acceleration", node_accel_fill),
     ]
     for array_name, fill_states in _simple_fills:
         if fill_states:
@@ -628,6 +728,7 @@ def build_d3plot(
     _layer_fills = [
         ("element_shell_stress", shell_stress_fill),
         ("element_shell_effective_plastic_strain", shell_eps_fill),
+        ("element_shell_strain", shell_strain_fill),
     ]
     for array_name, fill_entries in _layer_fills:
         if not fill_entries:
@@ -658,7 +759,7 @@ def build_d3plot(
         if fill_states:
             warn_list.append(
                 f"{array_name}: one-filled (all-alive) at states {fill_states} "
-                f"(source OFF array missing in those states)"
+                f"(source {alive_key} array missing in those states)"
             )
 
     # M7: phantom cell masking warning
@@ -688,6 +789,7 @@ def build_d3plot(
         "OFF",
         "EROSION_STATUS",
         "3DELEM_Stress",
+        "3DELEM_Strain",
         "3DELEM_Plastic_Strain",
         "2DELEM_Stress_(lower)",
         "2DELEM_Stress_(upper)",
@@ -788,6 +890,8 @@ def build_d3plot(
         a[ArrayType.element_beam_is_alive] = beam_alive
     if shell_strain is not None:
         a[ArrayType.element_shell_strain] = shell_strain
+    if solid_strain is not None:
+        a[ArrayType.element_solid_strain] = solid_strain
     if shell_thickness is not None:
         a[ArrayType.element_shell_thickness] = shell_thickness
 
