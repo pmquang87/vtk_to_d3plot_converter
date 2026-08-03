@@ -18,9 +18,13 @@ fringes/screenshots, batch automation.
 
 1. **EROSION_STATUS → is_alive** (official dialect). Verified today: deleted
    elements stay visible AND corrupt the auto-fringe max (TENSILE: 0.750
-   from a dead element vs 0.237 true). anim_to_vtk emits it unconditionally;
-   semantics 1=eroded confirmed in source + both fixtures (confirm once more
-   on the TENSILE failure state in the test). Mirror the OFF path.
+   from a dead element vs 0.237 true). anim_to_vtk emits it unconditionally.
+   **CORRECTED 2026-08-03: semantics are 1=alive/0=off (genani.F
+   "0.0:deleted 1.0:activated") — this doc originally said 1=eroded, which
+   all three fixtures refute. ALSO: rigid-part elements carry 0 from state
+   0 (never integrated, not eroded) — a raw pass-through hides them; use a
+   latched 1→0 rule (implemented status: see
+   docs/reviews/2026-08-03-m9-verification.md, C1).**
 2. **Unmapped-array warnings.** The converter recognizes exactly 17 array
    names and silently ignores every other array (real data: zug
    2DELEM_Specific_Energy absmax 2015). One end-of-build diff of consumed
@@ -32,11 +36,14 @@ fringes/screenshots, batch automation.
 4. **SPH robustness.** Official files from SPH runs contain VTK_VERTEX
    cells → map_topology raises ValueError and the whole conversion dies.
    Skip-with-warning (count masked particles) is one guard clause.
-5. **Atomic writes + stale-family cleanup** (batch hazard, critic finding).
-   convert() writes the final path directly and never removes pre-existing
-   higher family members — overwriting a run leaves a mixed stale family
-   that LS-PrePost happily reads as garbage states. Write to temp + rename,
-   delete stale `NN` members, clean up on exception.
+5. **Atomic writes** (batch hazard — PREMISE CORRECTED 2026-08-03: the
+   original claim that convert() "never removes pre-existing higher family
+   members" was FALSE; lasso's write_d3plot already removed the whole stale
+   family via a `[0-9]+` regex. The true remaining need is failure-safety
+   only: never destroy a pre-existing good family when a conversion fails,
+   and leave no truncated stub. See
+   docs/reviews/2026-08-03-m9-verification.md, T5, for the measured
+   regressions the original wording caused.)
 6. **CLI batch polish.** Per-state progress (a 40-state real run is minutes
    of silence today), Windows glob expansion, non-empty default title,
    lspp_check --fringe defaulting to the LAST state (t=0 renders an
@@ -107,7 +114,6 @@ The real levers, in order:
 
 ## Open questions worth one instrumented run each
 
-- EROSION_STATUS polarity confirmation on the TENSILE failure state.
 - Beam F1-F3/M1-M6 → d3plot slot mapping convention.
 - Which /ANIM keyword emits 2DELEM_Thickness (assumed /ANIM/ELEM/THIC).
 - Does LS-PrePost plot History>Global from lasso-written nglbv files.
