@@ -125,7 +125,13 @@ def _write_official_vtk_with_extras(
 
 
 def test_erosion_status_maps_to_is_alive(tmp_path):
-    """EROSION_STATUS (1=alive, 0=eroded) must map to element_shell_is_alive."""
+    """EROSION_STATUS with real alive→dead transition must map to element_shell_is_alive.
+
+    M10 latch rule: elements must be observed alive (=1) before they can
+    die.  Elements never alive in any state are forced alive (rigid/
+    non-integrated).  This test uses 2 states so elements 3,4 are alive
+    at state 0 then eroded at state 1 — a real 1→0 transition.
+    """
     d = tmp_path / "vtk"
     d.mkdir()
     n = 4
@@ -133,10 +139,18 @@ def test_erosion_status_maps_to_is_alive(tmp_path):
     mem = np.zeros((n, 3, 3), dtype=np.float64)
     mem[:, 0, 0] = [10, 20, 30, 40]
 
-    # Elements 1,2 alive (1), elements 3,4 eroded (0)
+    # State 0: all 4 elements alive
     _write_official_vtk_with_extras(
         d / "testA001.vtk",
         time_val=0.0,
+        n_shells=n,
+        stress_membrane=mem,
+        erosion_status=[1, 1, 1, 1],
+    )
+    # State 1: elements 3,4 eroded (1→0 transition)
+    _write_official_vtk_with_extras(
+        d / "testA002.vtk",
+        time_val=1.0,
         n_shells=n,
         stress_membrane=mem,
         erosion_status=[1, 1, 0, 0],
@@ -153,12 +167,17 @@ def test_erosion_status_maps_to_is_alive(tmp_path):
         "EROSION_STATUS should produce element_shell_is_alive"
     )
     alive = dp.arrays[ArrayType.element_shell_is_alive]
-    assert alive.shape == (1, n), f"Expected shape (1, {n}), got {alive.shape}"
-    # Elements 1,2 alive, elements 3,4 dead
+    assert alive.shape == (2, n), f"Expected shape (2, {n}), got {alive.shape}"
+    # State 0: all alive
     assert alive[0, 0] == 1.0
     assert alive[0, 1] == 1.0
-    assert alive[0, 2] == 0.0
-    assert alive[0, 3] == 0.0
+    assert alive[0, 2] == 1.0
+    assert alive[0, 3] == 1.0
+    # State 1: elements 3,4 dead (real 1→0 transition)
+    assert alive[1, 0] == 1.0
+    assert alive[1, 1] == 1.0
+    assert alive[1, 2] == 0.0
+    assert alive[1, 3] == 0.0
 
     # Warning should mention EROSION_STATUS
     assert any("EROSION_STATUS" in w for w in rep.warnings), (

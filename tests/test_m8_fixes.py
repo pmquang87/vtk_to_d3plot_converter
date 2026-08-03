@@ -437,9 +437,15 @@ def test_p2_non_ascii_title_no_crash(tmp_path):
     from vtk2d3plot.api import convert
 
     rep = convert(PORT_DIR, tmp_path / "box.d3plot", title="Größe")
+    from lasso.dyna import D3plot
+
     # Must not crash (implicit: we got here)
-    # M9: non-ASCII chars are now transliterated (ä→ae), so we get a transliteration warning
-    # instead of (or in addition to) a truncation warning
+    # Verify readback contains transliterated content
+    dp = D3plot(str(tmp_path / "box.d3plot"))
+    readback = dp.header.title.strip()
+    # 'Größe' should transliterate to 'Groesse'
+    assert "Groesse" in readback, f"Expected 'Groesse' in title readback, got {readback!r}"
+    # M9: non-ASCII chars are now transliterated, so we get a transliteration warning
     assert any("translit" in w.lower() or "truncat" in w.lower() for w in rep.warnings), (
         f"Expected transliteration or truncation warning for non-ASCII title; got: {rep.warnings}"
     )

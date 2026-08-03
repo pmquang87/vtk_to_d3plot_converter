@@ -69,10 +69,13 @@ def check_d3plot(
                 "msg": None, "detail": f"no such file: {d3}"}
 
     workdir = Path(tempfile.mkdtemp(prefix="lspp_check_"))
-    lines = [f'open d3plot "{str(d3)}"', "ac"]
+    lines = [f'open d3plot "{d3!s}"', "ac"]
     if fringe:
         if state is not None:
             lines.append(f"state {state};")
+        else:
+            # Default to last state — most interesting for post-processing
+            lines.append("state last;")
         lines += [f"fringe {FRINGE_IDS.get(fringe, fringe)}", "pfringe",
                   "range actele;", "isometric x"]
     if png:

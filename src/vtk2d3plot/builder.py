@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from lasso.dyna import ArrayType, D3plot
 
@@ -87,7 +89,7 @@ def _sanitize_title(title: str, wordsize: int = 4) -> tuple[str, list[str]]:
         title = ascii_title
 
     # Truncate to readable char budget (10*wordsize - 4 per lasso read-back)
-    max_chars = 10 * wordsize - 4  # 36 for 32-bit, 76 for 64-bit
+    max_chars = 10 * wordsize - 8 if wordsize == 8 else 10 * wordsize - 4  # 72 for f64, 36 for f32
     if len(title) > max_chars:
         warns.append(
             f"title truncated from {len(title)} to {max_chars} chars "
@@ -105,6 +107,7 @@ def build_d3plot(
     title: str = "",
     f64: bool = False,
     part_names: dict[int, str] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[D3plot, list[str]]:
     ftype = np.float64 if f64 else np.float32
     itype = np.int64 if f64 else np.int32
@@ -136,6 +139,8 @@ def build_d3plot(
     # ----------------------------------------------------------------
     node_disp = np.zeros((n_states, n_nodes, 3), dtype=ftype)
     for i, state in enumerate(series.states):
+        if progress is not None:
+            progress(i, n_states)
         node_disp[i] = state.points.astype(ftype)
 
     node_vel = None
@@ -462,6 +467,10 @@ def build_d3plot(
 
     # Determine alive source: OFF (port dialect) or EROSION_STATUS (official dialect)
     alive_key = None
+    if has_off and has_erosion_status:
+        warn_list.append(
+            "both OFF and EROSION_STATUS present; using OFF (port dialect takes priority)"
+        )
     if has_off:
         alive_key = "OFF"
     elif has_erosion_status:
@@ -493,6 +502,47 @@ def build_d3plot(
                     beam_alive[i] = state.cell_data[alive_key][model.beam_src].astype(ftype)
                 else:
                     beam_alive_fill.append(i)
+
+        if alive_key == "EROSION_STATUS":
+            for alive_arr, src_arr, type_name in [
+                (shell_alive, model.shell_src, "shell"),
+                (solid_alive, model.solid_src, "solid"),
+                (beam_alive, model.beam_src, "beam"),
+            ]:
+                if alive_arr is None:
+                    continue
+                # Step 1: Find elements NEVER alive (=0 in all states, never =1)
+                ever_alive = np.any(alive_arr == 1.0, axis=0)  # (n_elems,)
+                never_alive_mask = ~ever_alive  # elements with EROSION_STATUS=0 in every state
+                n_never = int(never_alive_mask.sum())
+                if n_never > 0:
+                    # Force never-alive elements to alive (they are rigid/non-integrated)
+                    alive_arr[:, never_alive_mask] = 1.0
+                    # Find which part IDs these elements belong to
+                    pid_data = series.states[0].cell_data.get("PART_ID")
+                    if pid_data is not None:
+                        affected_pids = sorted(
+                            {
+                                int(pid_data[src_arr[i]])
+                                for i in range(len(src_arr))
+                                if never_alive_mask[i]
+                            }
+                        )
+                        warn_list.append(
+                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state "
+                            f"(parts {affected_pids}); forced alive (rigid/non-integrated)"
+                        )
+                    else:
+                        warn_list.append(
+                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state; "
+                            f"forced alive (rigid/non-integrated)"
+                        )
+
+                # Step 2: Latch 1→0 transitions (element dies permanently, no resurrection)
+                for si in range(1, n_states):
+                    # Elements that were dead at previous state stay dead
+                    was_dead = alive_arr[si - 1] == 0.0
+                    alive_arr[si, was_dead] = 0.0
 
     # ================================================================
     # M4/N1 fix: emit aggregated fill warnings (partial-layer aware)
@@ -584,17 +634,19 @@ def build_d3plot(
     unmapped_point: dict[str, float] = {}
     for state in series.states:
         for k, v in state.cell_data.items():
-            if k not in _RECOGNIZED_CELL and k not in unmapped_cell:
+            if k not in _RECOGNIZED_CELL:
                 try:
-                    unmapped_cell[k] = float(np.abs(v).max())
+                    val = float(np.abs(v).max())
                 except (TypeError, ValueError):
-                    unmapped_cell[k] = 0.0
+                    val = 0.0
+                unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
         for k, v in state.point_data.items():
-            if k not in _RECOGNIZED_POINT and k not in unmapped_point:
+            if k not in _RECOGNIZED_POINT:
                 try:
-                    unmapped_point[k] = float(np.abs(v).max())
+                    val = float(np.abs(v).max())
                 except (TypeError, ValueError):
-                    unmapped_point[k] = 0.0
+                    val = 0.0
+                unmapped_point[k] = max(unmapped_point.get(k, 0.0), val)
     all_unmapped = {**unmapped_point, **unmapped_cell}
     if all_unmapped:
         items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unmapped.items()))

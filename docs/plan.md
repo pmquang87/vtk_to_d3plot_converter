@@ -24,6 +24,14 @@ into wrong layer), P2 (transliteration-based title). Roadmap Tier-1: EROSION_STA
 (VTK_VERTEX skip), atomic writes + stale-family cleanup, CLI batch polish
 (glob expansion, default title, --part-names).
 
+[x] **Milestone 10: Fix Round M10 (Post-M9-verification)**  
+Fix C1 (erosion latch — never-alive rigid elements forced alive), T5 (atomic
+write: regex stale cleanup, failure-safe, glob-escape), T2 (unmapped absmax
+max-accumulates across states), title budget f64 76→72, real surrogate/bytes
+title tests, stress/eps lower-only value tests, de-vacuous M8 P2 test,
+cp1252/BOM part-names encoding tolerance, OFF+EROSION coexistence warning,
+CLI title degeneration ('vtk'→parent dir).
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that

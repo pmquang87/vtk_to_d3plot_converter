@@ -471,3 +471,125 @@ def test_p1b_lower_only_eps_value_pinned(tmp_path):
     eps = dp.arrays[ArrayType.element_shell_effective_plastic_strain]
     assert np.isclose(eps[0, 0, 0], 0.01, atol=1e-5), f"Expected eps=0.01, got {eps[0, 0, 0]}"
     assert np.isclose(eps[0, 1, 0], 0.02, atol=1e-5), f"Expected eps=0.02, got {eps[0, 1, 0]}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M10: Real surrogate + bytes title tests
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_p2_real_surrogate_does_not_crash(tmp_path):
+    """Real unpaired surrogate in title must not crash."""
+    from vtk2d3plot.api import convert
+
+    # Create a string with a real unpaired surrogate
+    "test" + "\ud800".encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
+    # This will fail on encode — the _sanitize_title should handle it
+    # Actually, Python 3 strings can't contain unpaired surrogates normally.
+    # The guard in builder.py does: title.encode("utf-8", errors="replace").decode("utf-8")
+    # which replaces surrogates with the replacement character.
+    # The real test is: can we pass surrogatepass-decoded content without crashing?
+    try:
+        title_with_surr = "test\ud800"  # This may raise in some Python builds
+    except Exception:  # noqa: BLE001
+        pytest.skip("Platform does not support surrogate strings")
+    convert(PORT_DIR, tmp_path / "box.d3plot", title=title_with_surr)
+    # Must not crash
+
+
+def test_p2_bytes_title_does_not_crash(tmp_path):
+    """Bytes input for title must not crash."""
+    from vtk2d3plot.builder import _sanitize_title
+
+    title_bytes = b"Zugversuch Gr\xc3\xb6\xc3\x9fe"  # UTF-8 encoded "Größe"
+    result, _warns = _sanitize_title(title_bytes)
+    assert isinstance(result, str)
+    assert "Groesse" in result, f"Expected transliterated result, got {result!r}"
+
+
+def test_p2_bytes_latin1_title(tmp_path):
+    """Latin-1 bytes input for title must not crash (graceful degradation)."""
+    from vtk2d3plot.builder import _sanitize_title
+
+    title_bytes = b"Gr\xf6\xdfe"  # Latin-1 encoded "Größe" (not valid UTF-8)
+    result, _warns = _sanitize_title(title_bytes)
+    assert isinstance(result, str)
+    # Should not crash; content may be garbled but must be ASCII
+    result.encode("ascii")  # must not raise
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# M10: Stress-lower-only and eps-lower-only value pinning
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_stress_lower_only_value_pinned(tmp_path):
+    """Lower-only stress must preserve exact input values."""
+    d = tmp_path / "vtk"
+    d.mkdir()
+    n = 2
+    lo = np.zeros((n, 3, 3), dtype=np.float64)
+    lo[:, 0, 0] = [100, 200]
+    lo[0, 0, 1] = 30  # xy component for elem 0
+
+    _write_official_vtk(
+        d / "testA001.vtk",
+        time_val=0.0,
+        n_shells=n,
+        stress_lower=lo,
+    )
+
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot.api import convert
+
+    convert(d, tmp_path / "out.d3plot")
+    dp = D3plot(str(tmp_path / "out.d3plot"))
+
+    stress = dp.arrays[ArrayType.element_shell_stress]
+    # Lower stress should be in layer 0
+    assert np.isclose(stress[0, 0, 0, 0], 100.0, rtol=1e-4), (
+        f"Expected xx=100.0, got {stress[0, 0, 0, 0]}"
+    )
+    assert np.isclose(stress[0, 1, 0, 0], 200.0, rtol=1e-4), (
+        f"Expected xx=200.0, got {stress[0, 1, 0, 0]}"
+    )
+    assert np.isclose(stress[0, 0, 0, 3], 30.0, rtol=1e-4), (
+        f"Expected xy=30.0, got {stress[0, 0, 0, 3]}"
+    )
+    # Off-diagonal zeros
+    assert np.isclose(stress[0, 1, 0, 1], 0.0, atol=1e-6)
+
+
+def test_eps_half_lower_only_value_pinned(tmp_path):
+    """Lower-only eps with 2-layer stress must land in layer 0 with exact values."""
+    d = tmp_path / "vtk"
+    d.mkdir()
+    n = 2
+    lo = np.zeros((n, 3, 3), dtype=np.float64)
+    lo[:, 0, 0] = [50, 60]
+    hi = np.zeros((n, 3, 3), dtype=np.float64)
+    hi[:, 0, 0] = [55, 65]
+
+    _write_official_vtk(
+        d / "testA001.vtk",
+        time_val=0.0,
+        n_shells=n,
+        stress_lower=lo,
+        stress_upper=hi,
+        eps_lower=[0.011, 0.022],
+    )
+
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot.api import convert
+
+    convert(d, tmp_path / "out.d3plot")
+    dp = D3plot(str(tmp_path / "out.d3plot"))
+
+    eps = dp.arrays[ArrayType.element_shell_effective_plastic_strain]
+    assert eps.shape[2] == 2, f"Expected 2 layers, got {eps.shape[2]}"
+    assert np.isclose(eps[0, 0, 0], 0.011, atol=1e-5), f"Expected 0.011, got {eps[0, 0, 0]}"
+    assert np.isclose(eps[0, 1, 0], 0.022, atol=1e-5), f"Expected 0.022, got {eps[0, 1, 0]}"
+    # Layer 1 should be zero (no upper eps)
+    assert np.allclose(eps[0, :, 1], 0.0), "Layer 1 should be zero"

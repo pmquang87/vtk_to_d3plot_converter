@@ -5,7 +5,7 @@ Milestone 2: working convert() pipeline with geometry + kinematics.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,6 +32,7 @@ def convert(
     title: str = "",
     f64: bool = False,
     part_names: dict[int, str] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> ConversionReport:
     """Convert a VTK time series to an LS-DYNA d3plot family.
 
@@ -58,7 +59,9 @@ def convert(
 
     series = load_series(inputs)
     model = map_topology(series.states[0])
-    d3, warn_list = build_d3plot(series, model, title=title, f64=f64, part_names=part_names)
+    d3, warn_list = build_d3plot(
+        series, model, title=title, f64=f64, part_names=part_names, progress=progress,
+    )
 
     if model.n_skipped_cells > 0:
         types_str = ", ".join(str(t) for t in sorted(model.skipped_cell_types))
@@ -68,11 +71,23 @@ def convert(
             f"(VTK types: {types_str}); these are not included in the d3plot",
         )
 
+    import re
     import shutil
     import tempfile
 
     out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Record which files existed before we start (for safe failure cleanup)
+    pre_existing = set()
+    if out.exists():
+        pre_existing.add(out)
+    out01 = out.parent / f"{out.name}01"
+    if out01.exists():
+        pre_existing.add(out01)
+
+    # Track files created by this run
+    files_created: list[Path] = []
 
     # Atomic write: write to temp, then rename on success
     tmp_dir = out.parent
@@ -80,24 +95,30 @@ def convert(
         with tempfile.TemporaryDirectory(dir=tmp_dir) as td:
             tmp_base = Path(td) / "tmp.d3plot"
             d3.write_d3plot(str(tmp_base))
-            # Move generated files (base + base01) to final location
-            # First, remove stale family members from a previous run
-            for stale in sorted(out.parent.glob(f"{out.name}[0-9][0-9]")):
-                stale.unlink()
+
+            # Remove stale family members from a previous run.
+            # Use re.escape to handle special chars (brackets, etc.) in the name.
+            # Match the base name followed by one or more digits.
+            escaped = re.escape(out.name)
+            pattern = re.compile(f"^{escaped}(\\d+)$")
+            for f in sorted(out.parent.iterdir()):
+                if f.is_file() and pattern.match(f.name):
+                    f.unlink()
             if out.exists():
                 out.unlink()
+
             # Move the new files
             shutil.move(str(tmp_base), str(out))
+            files_created.append(out)
             tmp_states = Path(td) / "tmp.d3plot01"
             if tmp_states.exists():
                 shutil.move(str(tmp_states), str(out.parent / f"{out.name}01"))
+                files_created.append(out.parent / f"{out.name}01")
     except Exception:
-        # Clean up partial output on failure
-        if out.exists():
-            out.unlink()
-        out01 = out.parent / f"{out.name}01"
-        if out01.exists():
-            out01.unlink()
+        # Clean up ONLY files this run created (not pre-existing ones)
+        for f in files_created:
+            if f.exists() and f not in pre_existing:
+                f.unlink()
         raise
 
     return ConversionReport(

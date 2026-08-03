@@ -1,4 +1,6 @@
-import sys, os
+import os
+import sys
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import numpy as np
 from lasso.dyna.d3plot import D3plot

@@ -92,7 +92,20 @@ def main(argv: list[str] | None = None) -> None:
         if not pn_path.exists():
             print(f"ERROR: part-names file not found: {pn_path}", file=sys.stderr)
             raise SystemExit(1)
-        for line in pn_path.read_text(encoding="utf-8").splitlines():
+        try:
+            text = pn_path.read_text(encoding="utf-8-sig")  # handles BOM
+        except UnicodeDecodeError:
+            try:
+                text = pn_path.read_text(encoding="cp1252")
+                if not args.quiet:
+                    print("WARNING: part-names file is cp1252-encoded, not UTF-8", file=sys.stderr)
+            except UnicodeDecodeError:
+                print(
+                    f"ERROR: cannot decode part-names file {pn_path} (tried UTF-8, cp1252)",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+        for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -109,10 +122,27 @@ def main(argv: list[str] | None = None) -> None:
     if not args.title and len(args.inputs) == 1:
         p = Path(args.inputs[0])
         if p.is_dir():
-            args.title = p.name
+            dir_name = p.name
+            # If directory name is 'vtk', use parent directory name
+            if dir_name.lower() == "vtk" and p.parent.name:
+                dir_name = p.parent.name
+            args.title = dir_name
+
+    # Per-state progress callback for non-quiet mode
+    progress_fn = None
+    if not args.quiet:
+        def progress_fn(state_index: int, n_states: int) -> None:
+            print(f"  Processing state {state_index + 1}/{n_states}...")
 
     try:
-        rep = convert(inputs, args.output, title=args.title, f64=args.f64, part_names=part_names)
+        rep = convert(
+            inputs,
+            args.output,
+            title=args.title,
+            f64=args.f64,
+            part_names=part_names,
+            progress=progress_fn,
+        )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

@@ -34,6 +34,7 @@ markers = [
     "milestone7: fix round M7 (N1-N4 defects, M1/M7/M8 remedies)",
     "milestone8: fix round M8 (P1/P1b/P2/P3 from M7 verification)",
     "milestone9: fix round M9 (R1/R2/P2 fixes) + hardened tests",
+    "milestone10: fix round M10 (erosion latch, title budget, etc)",
     "roadmap_tier1: Tier-1 roadmap items (EROSION_STATUS, unmapped warnings, etc.)",
     "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
     "pyradioss: needs the pyradioss package (auto-skipped otherwise)",
