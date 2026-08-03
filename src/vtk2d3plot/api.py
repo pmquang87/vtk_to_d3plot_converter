@@ -139,7 +139,7 @@ def convert(
     try:
         with tempfile.TemporaryDirectory(dir=tmp_dir) as td:
             tmp_base = Path(td) / "tmp.d3plot"
-            d3.write_d3plot(str(tmp_base))
+            d3.write_d3plot(str(tmp_base), single_file=False)
 
             # Move new files to temp names in the target dir first
             for f in Path(td).iterdir():

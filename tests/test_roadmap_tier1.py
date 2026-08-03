@@ -364,8 +364,8 @@ def test_atomic_write_removes_stale_family(tmp_path):
     assert out.exists()
     assert (tmp_path / "box.d3plot01").exists()
 
-    # Create a fake stale family member
-    stale = tmp_path / "box.d3plot02"
+    # Create a fake stale family member with a number higher than any real state
+    stale = tmp_path / "box.d3plot99"
     stale.write_text("stale data")
     assert stale.exists()
 
@@ -373,7 +373,7 @@ def test_atomic_write_removes_stale_family(tmp_path):
     convert(PORT_DIR, out)
     assert out.exists()
     assert (tmp_path / "box.d3plot01").exists()
-    assert not stale.exists(), "Stale family member box.d3plot02 should be removed"
+    assert not stale.exists(), "Stale family member box.d3plot99 should be removed"
 
 
 def test_atomic_write_no_partial_on_failure(tmp_path):
