@@ -21,7 +21,7 @@ def _find_key(d: dict, name: str) -> str | None:
     return None
 
 
-def _tensor_to_voigt(t: np.ndarray) -> np.ndarray:
+def _tensor_to_voigt(t: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     """Convert (n, 3, 3) symmetric tensor to (n, 6) Voigt: xx yy zz xy xz yz.
 
     The binary d3plot layout for stress slots 3-5 is [σxy, σxz, σyz].
@@ -30,18 +30,25 @@ def _tensor_to_voigt(t: np.ndarray) -> np.ndarray:
     position (0,2) and zx at (1,2), so the Voigt extraction here produces
     the correct slot assignment.  Verified against Vortex golden d3plot.
     """
-    return np.stack(
-        [t[:, 0, 0], t[:, 1, 1], t[:, 2, 2], t[:, 0, 1], t[:, 0, 2], t[:, 1, 2]],
-        axis=-1,
-    )
+    if out is None:
+        out = np.empty((t.shape[0], 6), dtype=t.dtype)
+    out[:, 0] = t[:, 0, 0]
+    out[:, 1] = t[:, 1, 1]
+    out[:, 2] = t[:, 2, 2]
+    out[:, 3] = t[:, 0, 1]
+    out[:, 4] = t[:, 0, 2]
+    out[:, 5] = t[:, 1, 2]
+    return out
 
 
 def _any_state_has(series: VtkSeries, key: str, data_kind: str = "cell") -> bool:
     """Check if any state in the series contains the given key (M3 fix)."""
+    low_key = key.lower()
     for state in series.states:
         d = state.cell_data if data_kind == "cell" else state.point_data
-        if key in d:
-            return True
+        for k in d:
+            if k.lower() == low_key:
+                return True
     return False
 
 
@@ -101,6 +108,51 @@ def _sanitize_title(title: str, wordsize: int = 4) -> tuple[str, list[str]]:
     return title, warns
 
 
+def _build_kinematics(series, n_nodes, ftype, progress, n_states, get_point_key, warn_list):
+    # Geometry recovery: x0 = POINTS - DISPLACEMENT (case-insensitive)
+    x0 = None
+    for i, state in enumerate(series.states):
+        dk = get_point_key(i, "DISPLACEMENT")
+        if dk is not None:
+            x0 = state.points - state.point_data[dk]
+            break
+    if x0 is None:
+        x0 = series.states[0].points
+        warn_list.append(
+            "No DISPLACEMENT array found; using state 0 coordinates as undeformed geometry"
+        )
+
+    # Kinematics
+    node_disp = np.empty((n_states, n_nodes, 3), dtype=ftype)
+    for i, state in enumerate(series.states):
+        if progress is not None:
+            progress(i, n_states)
+        node_disp[i] = state.points.astype(ftype)
+
+    node_vel = None
+    node_vel_fill: list[int] = []
+    if any(get_point_key(i, "VELOCITY") for i, s in enumerate(series.states)):
+        node_vel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
+        for i, state in enumerate(series.states):
+            vk = get_point_key(i, "VELOCITY")
+            if vk is not None:
+                node_vel[i] = state.point_data[vk].astype(ftype)
+            else:
+                node_vel_fill.append(i)
+
+    node_accel = None
+    node_accel_fill: list[int] = []
+    if any(get_point_key(i, "ACCELERATION") for i, s in enumerate(series.states)):
+        node_accel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
+        for i, state in enumerate(series.states):
+            ak = get_point_key(i, "ACCELERATION")
+            if ak is not None:
+                node_accel[i] = state.point_data[ak].astype(ftype)
+            else:
+                node_accel_fill.append(i)
+
+    return x0, node_disp, node_vel, node_accel, node_vel_fill, node_accel_fill
+
 def build_d3plot(
     series: VtkSeries,
     model: MappedModel,
@@ -114,6 +166,18 @@ def build_d3plot(
     ftype = np.float64 if f64 else np.float32
     itype = np.int64 if f64 else np.int32
 
+    # ----------------------------------------------------------------
+    # O(1) Key Lookups: normalize VTK array keys once to eliminate linear scans
+    # ----------------------------------------------------------------
+    _point_keys = [{k.lower(): k for k in state.point_data} for state in series.states]
+    _cell_keys = [{k.lower(): k for k in state.cell_data} for state in series.states]
+
+    def get_point_key(i: int, k: str) -> str | None:
+        return _point_keys[i].get(k.lower())
+
+    def get_cell_key(i: int, k: str) -> str | None:
+        return _cell_keys[i].get(k.lower())
+
     warn_list: list[str] = []
     n_states = len(series.states)
     n_nodes = series.states[0].points.shape[0]
@@ -121,51 +185,7 @@ def build_d3plot(
     n_shells = model.shell_conn.shape[0]
     n_beams = model.beam_conn.shape[0]
 
-    # ----------------------------------------------------------------
-    # Geometry recovery: x0 = POINTS - DISPLACEMENT (case-insensitive)
-    # ----------------------------------------------------------------
-    x0 = None
-    for state in series.states:
-        dk = _find_key(state.point_data, "DISPLACEMENT")
-        if dk is not None:
-            x0 = state.points - state.point_data[dk]
-            break
-    if x0 is None:
-        x0 = series.states[0].points
-        warn_list.append(
-            "No DISPLACEMENT array found; using state 0 coordinates as undeformed geometry"
-        )
-
-    # ----------------------------------------------------------------
-    # Kinematics
-    # ----------------------------------------------------------------
-    node_disp = np.zeros((n_states, n_nodes, 3), dtype=ftype)
-    for i, state in enumerate(series.states):
-        if progress is not None:
-            progress(i, n_states)
-        node_disp[i] = state.points.astype(ftype)
-
-    node_vel = None
-    node_vel_fill: list[int] = []
-    if any(_find_key(s.point_data, "VELOCITY") for s in series.states):
-        node_vel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
-        for i, state in enumerate(series.states):
-            vk = _find_key(state.point_data, "VELOCITY")
-            if vk is not None:
-                node_vel[i] = state.point_data[vk].astype(ftype)
-            else:
-                node_vel_fill.append(i)
-
-    node_accel = None
-    node_accel_fill: list[int] = []
-    if any(_find_key(s.point_data, "ACCELERATION") for s in series.states):
-        node_accel = np.zeros((n_states, n_nodes, 3), dtype=ftype)
-        for i, state in enumerate(series.states):
-            ak = _find_key(state.point_data, "ACCELERATION")
-            if ak is not None:
-                node_accel[i] = state.point_data[ak].astype(ftype)
-            else:
-                node_accel_fill.append(i)
+    x0, node_disp, node_vel, node_accel, node_vel_fill, node_accel_fill = _build_kinematics(series, n_nodes, ftype, progress, n_states, get_point_key, warn_list)
 
     # ----------------------------------------------------------------
     # Element results: detect which arrays are present (M3: union over ALL states)
@@ -331,7 +351,7 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "3DELEM_Stress" in state.cell_data:
                 t = state.cell_data["3DELEM_Stress"][model.solid_src]  # (n_solids, 3, 3)
-                solid_stress[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=solid_stress[i, :, 0, :])
             else:
                 solid_stress_fill.append(i)
     elif has_vonm and n_solids > 0:
@@ -367,13 +387,13 @@ def build_d3plot(
             hi_present = "2DELEM_Stress_(upper)" in state.cell_data
             if lo_present:
                 t_lo = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
-                shell_stress[i, :, 0, :] = _tensor_to_voigt(t_lo).astype(ftype)
+                _tensor_to_voigt(t_lo, out=shell_stress[i, :, 0, :])
             else:
                 # N1 fix: track partial-layer fill
                 shell_stress_fill.append((i, "2DELEM_Stress_(lower)"))
             if hi_present:
                 t_hi = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
-                shell_stress[i, :, 1, :] = _tensor_to_voigt(t_hi).astype(ftype)
+                _tensor_to_voigt(t_hi, out=shell_stress[i, :, 1, :])
             else:
                 shell_stress_fill.append((i, "2DELEM_Stress_(upper)"))
         # M1 fix: warn about element-local coordinates
@@ -392,7 +412,7 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "2DELEM_Stress_(membrane)" in state.cell_data:
                 t_mem = state.cell_data["2DELEM_Stress_(membrane)"][model.shell_src]
-                shell_stress[i, :, 0, :] = _tensor_to_voigt(t_mem).astype(ftype)
+                _tensor_to_voigt(t_mem, out=shell_stress[i, :, 0, :])
             else:
                 shell_stress_fill.append(i)
     elif has_shell_stress_upper_only:
@@ -406,7 +426,7 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "2DELEM_Stress_(upper)" in state.cell_data:
                 t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
-                shell_stress[i, :, upper_layer, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=shell_stress[i, :, upper_layer, :])
             else:
                 shell_stress_fill.append(i)
     elif has_shell_stress_lower_only:
@@ -419,7 +439,7 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "2DELEM_Stress_(lower)" in state.cell_data:
                 t = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
-                shell_stress[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=shell_stress[i, :, 0, :])
             else:
                 shell_stress_fill.append(i)
     elif has_shell_vonmises_official:
@@ -607,12 +627,12 @@ def build_d3plot(
             hi_present = "2DELEM_Strain_(upper)" in state.cell_data
             if lo_present:
                 t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
-                shell_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=shell_strain[i, :, 0, :])
             else:
                 shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
             if hi_present:
                 t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                shell_strain[i, :, upper_layer, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=shell_strain[i, :, upper_layer, :])
             else:
                 shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
         # M12: local-frame warning for strain (M1 class)
@@ -690,7 +710,7 @@ def build_d3plot(
         for i, state in enumerate(series.states):
             if "3DELEM_Strain" in state.cell_data:
                 t = state.cell_data["3DELEM_Strain"][model.solid_src]  # (n_solids, 3, 3)
-                solid_strain[i, :, 0, :] = _tensor_to_voigt(t).astype(ftype)
+                _tensor_to_voigt(t, out=solid_strain[i, :, 0, :])
             else:
                 solid_strain_fill.append(i)
 

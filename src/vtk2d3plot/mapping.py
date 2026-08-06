@@ -33,7 +33,7 @@ def map_topology(state0: VtkState) -> MappedModel:
     SOLID_TYPES = {
         12: [0, 1, 2, 3, 4, 5, 6, 7],  # hex
         10: [0, 1, 2, 3, 3, 3, 3, 3],  # tetra
-        13: [0, 1, 4, 3, 2, 2, 5, 5],  # wedge
+        13: [0, 1, 2, 2, 3, 4, 5, 5],  # wedge
         14: [0, 1, 2, 3, 4, 4, 4, 4],  # pyramid
     }
     SHELL_TYPES = {
@@ -132,23 +132,27 @@ def map_topology(state0: VtkState) -> MappedModel:
     if "PART_ID" in state0.cell_data:
         raw_part_ids = state0.cell_data["PART_ID"].astype(np.int32)
         # Unique preserving order of appearance
-        _, idx = np.unique(raw_part_ids, return_index=True)
-        part_ids = raw_part_ids[np.sort(idx)]
+        u, idx, inv = np.unique(raw_part_ids, return_index=True, return_inverse=True)
+        sort_idx = np.argsort(idx)
+        part_ids = u[sort_idx]
 
-        part_id_to_idx = {pid: i for i, pid in enumerate(part_ids)}
+        # Map from raw_part_ids to index in part_ids array
+        sort_idx_inv = np.empty_like(sort_idx)
+        sort_idx_inv[sort_idx] = np.arange(len(sort_idx), dtype=np.int32)
+        raw_to_part_idx = sort_idx_inv[inv]
 
         solid_part_idx = (
-            np.array([part_id_to_idx[raw_part_ids[i]] for i in solid_src], dtype=np.int32)
+            raw_to_part_idx[solid_src]
             if len(solid_src)
             else np.empty((0,), dtype=np.int32)
         )
         shell_part_idx = (
-            np.array([part_id_to_idx[raw_part_ids[i]] for i in shell_src], dtype=np.int32)
+            raw_to_part_idx[shell_src]
             if len(shell_src)
             else np.empty((0,), dtype=np.int32)
         )
         beam_part_idx = (
-            np.array([part_id_to_idx[raw_part_ids[i]] for i in beam_src], dtype=np.int32)
+            raw_to_part_idx[beam_src]
             if len(beam_src)
             else np.empty((0,), dtype=np.int32)
         )
