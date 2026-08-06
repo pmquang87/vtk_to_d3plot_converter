@@ -153,6 +153,417 @@ def _build_kinematics(series, n_nodes, ftype, progress, n_states, get_point_key,
 
     return x0, node_disp, node_vel, node_accel, node_vel_fill, node_accel_fill
 
+def _build_solid_results(
+    series, model, ftype, n_states, n_solids, warn_list,
+    has_solid_stress, has_vonm, has_solid_vonmises,
+    has_solid_eps, has_epsp,
+    has_solid_internal_energy, has_solid_strain, _tensor_to_voigt
+):
+    # ================================================================
+    # === Solid stress (n_states, n_solids, 1, 6) ===
+    # ================================================================
+    solid_stress = None
+    solid_stress_fill: list[int] = []
+    if has_solid_stress:
+        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "3DELEM_Stress" in state.cell_data:
+                t = state.cell_data["3DELEM_Stress"][model.solid_src]  # (n_solids, 3, 3)
+                _tensor_to_voigt(t, out=solid_stress[i, :, 0, :])
+            else:
+                solid_stress_fill.append(i)
+    elif has_vonm and n_solids > 0:
+        # C1 fix: port-dialect solids get synthetic stress from VONM
+        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+        warn_list.append("solid stress tensor is synthetic-uniaxial from VONM")
+        for i, state in enumerate(series.states):
+            if "VONM" in state.cell_data:
+                vonm = state.cell_data["VONM"][model.solid_src]
+                solid_stress[i, :, 0, 0] = vonm.astype(ftype)
+            else:
+                solid_stress_fill.append(i)
+    elif has_solid_vonmises:
+        # Official dialect: 3DELEM_Von_Mises scalar → synthetic-uniaxial solid stress
+        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+        warn_list.append("solid stress tensor is synthetic-uniaxial from 3DELEM_Von_Mises")
+        for i, state in enumerate(series.states):
+            if "3DELEM_Von_Mises" in state.cell_data:
+                vonm = state.cell_data["3DELEM_Von_Mises"][model.solid_src]
+                solid_stress[i, :, 0, 0] = vonm.astype(ftype)
+            else:
+                solid_stress_fill.append(i)
+
+    # ================================================================
+    # === Solid plastic strain (n_states, n_solids, 1) ===
+    # ================================================================
+    solid_eps = None
+    solid_eps_fill: list[int] = []
+    if has_solid_eps:
+        solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "3DELEM_Plastic_Strain" in state.cell_data:
+                eps = state.cell_data["3DELEM_Plastic_Strain"][model.solid_src]
+                solid_eps[i, :, 0] = eps.astype(ftype)
+            else:
+                solid_eps_fill.append(i)
+    elif has_epsp and n_solids > 0:
+        # C1 fix: port-dialect solids get EPSP
+        solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "EPSP" in state.cell_data:
+                solid_eps[i, :, 0] = state.cell_data["EPSP"][model.solid_src].astype(ftype)
+            else:
+                solid_eps_fill.append(i)
+
+    # ================================================================
+    # === Solid internal energy (mapped to history variables) ===
+    # ================================================================
+    solid_history_vars = None
+    solid_history_vars_fill: list[int] = []
+    if has_solid_internal_energy:
+        warn_list.append(
+            "solid internal energy mapped to element_solid_history_variables (index 0)"
+        )
+        solid_history_vars = np.zeros((n_states, n_solids, 1, 1), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "3DELEM_Specific_Energy" in state.cell_data:
+                ie = state.cell_data["3DELEM_Specific_Energy"][model.solid_src]
+                solid_history_vars[i, :, 0, 0] = ie.astype(ftype)
+            else:
+                solid_history_vars_fill.append(i)
+
+    # ================================================================
+    # === Solid strain tensor (n_states, n_solids, 1, 6) ===
+    # ================================================================
+    solid_strain = None
+    solid_strain_fill: list[int] = []
+    if has_solid_strain:
+        solid_strain = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "3DELEM_Strain" in state.cell_data:
+                t = state.cell_data["3DELEM_Strain"][model.solid_src]  # (n_solids, 3, 3)
+                _tensor_to_voigt(t, out=solid_strain[i, :, 0, :])
+            else:
+                solid_strain_fill.append(i)
+
+
+    return solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, solid_history_vars_fill, solid_strain, solid_strain_fill
+
+def _build_shell_results(
+    series, model, ftype, n_states, n_shells, n_shell_layers, warn_list, rotate_shell_stress,
+    has_shell_stress_2layer, has_shell_stress_membrane, has_shell_stress_upper_only,
+    has_shell_stress_lower_only, has_shell_vonmises_official, has_vonm,
+    has_shell_eps_2layer, has_shell_eps_upper_only, has_shell_eps_lower_only,
+    has_shell_eps_single, has_epsp,
+    has_shell_internal_energy,
+    has_shell_strain_2layer, has_shell_strain_upper_only, has_shell_strain_lower_only,
+    has_shell_strain_membrane,
+    has_shell_thickness, _tensor_to_voigt, rotate_stress_to_global, compute_shell_local_frames
+):
+    # ================================================================
+    # === Shell stress (n_states, n_shells, n_layers, 6) ===
+    # ================================================================
+    shell_stress = None
+    shell_stress_fill: list[int] = []
+    if has_shell_stress_2layer:
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        for i, state in enumerate(series.states):
+            lo_present = "2DELEM_Stress_(lower)" in state.cell_data
+            hi_present = "2DELEM_Stress_(upper)" in state.cell_data
+            if lo_present:
+                t_lo = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
+                _tensor_to_voigt(t_lo, out=shell_stress[i, :, 0, :])
+            else:
+                # N1 fix: track partial-layer fill
+                shell_stress_fill.append((i, "2DELEM_Stress_(lower)"))
+            if hi_present:
+                t_hi = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
+                _tensor_to_voigt(t_hi, out=shell_stress[i, :, 1, :])
+            else:
+                shell_stress_fill.append((i, "2DELEM_Stress_(upper)"))
+        # M1 fix: warn about element-local coordinates
+        warn_list.append(
+            "shell stress in element-local coordinates (from anim_to_vtk); "
+            "von Mises / principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+    elif has_shell_stress_membrane:
+        # M2 fix: accept membrane as single-layer source
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append(
+            "shell stress from 2DELEM_Stress_(membrane) — single layer, element-local coordinates; "
+            "von Mises / principal invariants are exact"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Stress_(membrane)" in state.cell_data:
+                t_mem = state.cell_data["2DELEM_Stress_(membrane)"][model.shell_src]
+                _tensor_to_voigt(t_mem, out=shell_stress[i, :, 0, :])
+            else:
+                shell_stress_fill.append(i)
+    elif has_shell_stress_upper_only:
+        # P1b fix: only upper layer exists — map into correct slot
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        upper_layer = min(1, n_shell_layers - 1)
+        warn_list.append(
+            f"only 2DELEM_Stress_(upper) found (lower missing from all states); "
+            f"mapped to layer {upper_layer}, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Stress_(upper)" in state.cell_data:
+                t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
+                _tensor_to_voigt(t, out=shell_stress[i, :, upper_layer, :])
+            else:
+                shell_stress_fill.append(i)
+    elif has_shell_stress_lower_only:
+        # P1b fix: only lower layer exists — map into layer 0
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Stress_(lower) found (upper missing from all states); "
+            "mapped to layer 0, element-local coordinates"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Stress_(lower)" in state.cell_data:
+                t = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
+                _tensor_to_voigt(t, out=shell_stress[i, :, 0, :])
+            else:
+                shell_stress_fill.append(i)
+    elif has_shell_vonmises_official:
+        # M2 fix: fallback to 2DELEM_Von_Mises as synthetic-uniaxial
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append("shell stress tensor is synthetic-uniaxial from 2DELEM_Von_Mises")
+        for i, state in enumerate(series.states):
+            if "2DELEM_Von_Mises" in state.cell_data:
+                vm = state.cell_data["2DELEM_Von_Mises"][model.shell_src]
+                shell_stress[i, :, 0, 0] = vm.astype(ftype)
+            else:
+                shell_stress_fill.append(i)
+    elif has_vonm and n_shells > 0:
+        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
+        warn_list.append("stress tensor is synthetic-uniaxial from VONM")
+        for i, state in enumerate(series.states):
+            if "VONM" in state.cell_data:
+                vonm = state.cell_data["VONM"][model.shell_src]  # (n_shells,)
+                shell_stress[i, :, 0, 0] = vonm.astype(ftype)
+            else:
+                shell_stress_fill.append(i)
+
+    if shell_stress is not None and rotate_shell_stress:
+        for i, state in enumerate(series.states):
+            R = compute_shell_local_frames(state.points, model.shell_conn)
+            shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
+
+        for w_idx in range(len(warn_list)):
+            if "shell stress" in warn_list[w_idx] or "2DELEM_Stress" in warn_list[w_idx]:
+                warn_list[w_idx] = (
+                    warn_list[w_idx]
+                    .replace(
+                        "element-local coordinates (from anim_to_vtk); von Mises / principal invariants are exact, but raw component values differ from global frame",
+                        "rotated to global frame (using standard diagonal-based local frame)",
+                    )
+                    .replace(
+                        "element-local coordinates; von Mises / principal invariants are exact",
+                        "rotated to global frame",
+                    )
+                    .replace(", element-local coordinates", ", rotated to global frame")
+                )
+
+    # ================================================================
+    # === Shell internal energy (n_states, n_shells) ===
+    # ================================================================
+    shell_internal_energy = None
+    shell_internal_energy_fill: list[int] = []
+    if has_shell_internal_energy:
+        shell_internal_energy = np.zeros((n_states, n_shells), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "2DELEM_Specific_Energy" in state.cell_data:
+                ie = state.cell_data["2DELEM_Specific_Energy"][model.shell_src]
+                shell_internal_energy[i, :] = ie.astype(ftype)
+            else:
+                shell_internal_energy_fill.append(i)
+
+    # ================================================================
+    # === Shell plastic strain ===
+    # ================================================================
+    shell_eps = None
+    shell_eps_fill: list[int] = []
+    if has_shell_eps_2layer:
+        shell_eps = np.zeros((n_states, n_shells, n_shell_layers), dtype=ftype)
+        for i, state in enumerate(series.states):
+            lo = "2DELEM_Plastic_Strain_Lower" in state.cell_data
+            hi = "2DELEM_Plastic_Strain_Upper" in state.cell_data
+            if lo:
+                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Lower"))
+            if hi:
+                shell_eps[i, :, 1] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Upper"))
+    elif has_shell_eps_upper_only:
+        # P1b fix: only upper eps exists — map into correct slot
+        shell_eps = np.zeros(
+            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
+        )
+        upper_eps_layer = min(1, (n_shell_layers if n_shell_layers > 0 else 1) - 1)
+        warn_list.append(
+            f"only 2DELEM_Plastic_Strain_Upper found (Lower missing from all states); "
+            f"mapped to layer {upper_eps_layer}"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Plastic_Strain_Upper" in state.cell_data:
+                shell_eps[i, :, upper_eps_layer] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append(i)
+    elif has_shell_eps_lower_only:
+        # P1b fix: only lower eps exists — map into layer 0
+        shell_eps = np.zeros(
+            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
+        )
+        warn_list.append(
+            "only 2DELEM_Plastic_Strain_Lower found (Upper missing from all states); "
+            "mapped to layer 0"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Plastic_Strain_Lower" in state.cell_data:
+                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
+                    model.shell_src
+                ].astype(ftype)
+            else:
+                shell_eps_fill.append(i)
+    elif has_shell_eps_single:
+        # Replicate single scalar into both layers (official with no Upper/Lower split)
+        n_layers = n_shell_layers if n_shell_layers > 0 else 1
+        shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "2DELEM_Plastic_Strain" in state.cell_data:
+                eps = state.cell_data["2DELEM_Plastic_Strain"][model.shell_src].astype(ftype)
+                for layer in range(n_layers):
+                    shell_eps[i, :, layer] = eps
+            else:
+                shell_eps_fill.append(i)
+    elif has_epsp and n_shells > 0:
+        n_layers = n_shell_layers if n_shell_layers > 0 else 1
+        shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "EPSP" in state.cell_data:
+                eps_val = state.cell_data["EPSP"][model.shell_src].astype(ftype)
+                for layer in range(n_layers):
+                    shell_eps[i, :, layer] = eps_val
+            else:
+                shell_eps_fill.append(i)
+
+    # ================================================================
+    # === Shell strain tensor (n_states, n_shells, 2, 6) ===
+    # ================================================================
+    # M12 S1: 2-layer wins over membrane (mirror stress precedence)
+    shell_strain = None
+    shell_strain_fill: list = []
+    if has_shell_strain_2layer:
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
+        for i, state in enumerate(series.states):
+            lo_present = "2DELEM_Strain_(lower)" in state.cell_data
+            hi_present = "2DELEM_Strain_(upper)" in state.cell_data
+            if lo_present:
+                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+                _tensor_to_voigt(t, out=shell_strain[i, :, 0, :])
+            else:
+                shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
+            if hi_present:
+                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+                _tensor_to_voigt(t, out=shell_strain[i, :, upper_layer, :])
+            else:
+                shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
+        # M12: local-frame warning for strain (M1 class)
+        warn_list.append(
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+    elif has_shell_strain_upper_only:
+        # M12 S1: only upper strain exists — duplicate into both layers
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Strain_(upper) found (lower missing from all states); "
+            "duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Strain_(upper)" in state.cell_data:
+                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+                voigt = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, 0, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
+            else:
+                shell_strain_fill.append(i)
+    elif has_shell_strain_lower_only:
+        # M12 S1: only lower strain exists — duplicate into both layers
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
+        warn_list.append(
+            "only 2DELEM_Strain_(lower) found (upper missing from all states); "
+            "duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Strain_(lower)" in state.cell_data:
+                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+                voigt = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, 0, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
+            else:
+                shell_strain_fill.append(i)
+    elif has_shell_strain_membrane:
+        n_layers = max(1, n_shell_layers)
+        upper_layer = min(1, n_layers - 1)
+        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
+        warn_list.append(
+            "shell strain from 2DELEM_Strain_(membrane) — single layer duplicated to both layers. "
+            "shell strain in element-local coordinates (from anim_to_vtk); "
+            "principal invariants are exact, "
+            "but raw component values differ from global frame"
+        )
+        for i, state in enumerate(series.states):
+            if "2DELEM_Strain_(membrane)" in state.cell_data:
+                t = state.cell_data["2DELEM_Strain_(membrane)"][model.shell_src]
+                voigt = _tensor_to_voigt(t).astype(ftype)
+                shell_strain[i, :, 0, :] = voigt
+                shell_strain[i, :, upper_layer, :] = voigt
+            else:
+                shell_strain_fill.append(i)
+
+    # ================================================================
+    # === Shell thickness (n_states, n_shells) ===
+    # ================================================================
+    shell_thickness = None
+    shell_thickness_fill: list[int] = []
+    if has_shell_thickness:
+        shell_thickness = np.zeros((n_states, n_shells), dtype=ftype)
+        for i, state in enumerate(series.states):
+            if "2DELEM_Thickness" in state.cell_data:
+                shell_thickness[i, :] = state.cell_data["2DELEM_Thickness"][model.shell_src].astype(
+                    ftype
+                )
+            else:
+                shell_thickness_fill.append(i)
+
+
+    return shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill
+
 def build_d3plot(
     series: VtkSeries,
     model: MappedModel,
@@ -341,393 +752,25 @@ def build_d3plot(
             f"— reconciled to {n_shell_layers} layers (d3plot MAXINT constraint)"
         )
 
-    # ================================================================
-    # === Solid stress (n_states, n_solids, 1, 6) ===
-    # ================================================================
-    solid_stress = None
-    solid_stress_fill: list[int] = []
-    if has_solid_stress:
-        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "3DELEM_Stress" in state.cell_data:
-                t = state.cell_data["3DELEM_Stress"][model.solid_src]  # (n_solids, 3, 3)
-                _tensor_to_voigt(t, out=solid_stress[i, :, 0, :])
-            else:
-                solid_stress_fill.append(i)
-    elif has_vonm and n_solids > 0:
-        # C1 fix: port-dialect solids get synthetic stress from VONM
-        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
-        warn_list.append("solid stress tensor is synthetic-uniaxial from VONM")
-        for i, state in enumerate(series.states):
-            if "VONM" in state.cell_data:
-                vonm = state.cell_data["VONM"][model.solid_src]
-                solid_stress[i, :, 0, 0] = vonm.astype(ftype)
-            else:
-                solid_stress_fill.append(i)
-    elif has_solid_vonmises:
-        # Official dialect: 3DELEM_Von_Mises scalar → synthetic-uniaxial solid stress
-        solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
-        warn_list.append("solid stress tensor is synthetic-uniaxial from 3DELEM_Von_Mises")
-        for i, state in enumerate(series.states):
-            if "3DELEM_Von_Mises" in state.cell_data:
-                vonm = state.cell_data["3DELEM_Von_Mises"][model.solid_src]
-                solid_stress[i, :, 0, 0] = vonm.astype(ftype)
-            else:
-                solid_stress_fill.append(i)
 
-    # ================================================================
-    # === Shell stress (n_states, n_shells, n_layers, 6) ===
-    # ================================================================
-    shell_stress = None
-    shell_stress_fill: list[int] = []
-    if has_shell_stress_2layer:
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        for i, state in enumerate(series.states):
-            lo_present = "2DELEM_Stress_(lower)" in state.cell_data
-            hi_present = "2DELEM_Stress_(upper)" in state.cell_data
-            if lo_present:
-                t_lo = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
-                _tensor_to_voigt(t_lo, out=shell_stress[i, :, 0, :])
-            else:
-                # N1 fix: track partial-layer fill
-                shell_stress_fill.append((i, "2DELEM_Stress_(lower)"))
-            if hi_present:
-                t_hi = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
-                _tensor_to_voigt(t_hi, out=shell_stress[i, :, 1, :])
-            else:
-                shell_stress_fill.append((i, "2DELEM_Stress_(upper)"))
-        # M1 fix: warn about element-local coordinates
-        warn_list.append(
-            "shell stress in element-local coordinates (from anim_to_vtk); "
-            "von Mises / principal invariants are exact, "
-            "but raw component values differ from global frame"
-        )
-    elif has_shell_stress_membrane:
-        # M2 fix: accept membrane as single-layer source
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        warn_list.append(
-            "shell stress from 2DELEM_Stress_(membrane) — single layer, element-local coordinates; "
-            "von Mises / principal invariants are exact"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(membrane)" in state.cell_data:
-                t_mem = state.cell_data["2DELEM_Stress_(membrane)"][model.shell_src]
-                _tensor_to_voigt(t_mem, out=shell_stress[i, :, 0, :])
-            else:
-                shell_stress_fill.append(i)
-    elif has_shell_stress_upper_only:
-        # P1b fix: only upper layer exists — map into correct slot
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        upper_layer = min(1, n_shell_layers - 1)
-        warn_list.append(
-            f"only 2DELEM_Stress_(upper) found (lower missing from all states); "
-            f"mapped to layer {upper_layer}, element-local coordinates"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(upper)" in state.cell_data:
-                t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
-                _tensor_to_voigt(t, out=shell_stress[i, :, upper_layer, :])
-            else:
-                shell_stress_fill.append(i)
-    elif has_shell_stress_lower_only:
-        # P1b fix: only lower layer exists — map into layer 0
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        warn_list.append(
-            "only 2DELEM_Stress_(lower) found (upper missing from all states); "
-            "mapped to layer 0, element-local coordinates"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(lower)" in state.cell_data:
-                t = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
-                _tensor_to_voigt(t, out=shell_stress[i, :, 0, :])
-            else:
-                shell_stress_fill.append(i)
-    elif has_shell_vonmises_official:
-        # M2 fix: fallback to 2DELEM_Von_Mises as synthetic-uniaxial
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        warn_list.append("shell stress tensor is synthetic-uniaxial from 2DELEM_Von_Mises")
-        for i, state in enumerate(series.states):
-            if "2DELEM_Von_Mises" in state.cell_data:
-                vm = state.cell_data["2DELEM_Von_Mises"][model.shell_src]
-                shell_stress[i, :, 0, 0] = vm.astype(ftype)
-            else:
-                shell_stress_fill.append(i)
-    elif has_vonm and n_shells > 0:
-        shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
-        warn_list.append("stress tensor is synthetic-uniaxial from VONM")
-        for i, state in enumerate(series.states):
-            if "VONM" in state.cell_data:
-                vonm = state.cell_data["VONM"][model.shell_src]  # (n_shells,)
-                shell_stress[i, :, 0, 0] = vonm.astype(ftype)
-            else:
-                shell_stress_fill.append(i)
+    solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, solid_history_vars_fill, solid_strain, solid_strain_fill = _build_solid_results(
+        series, model, ftype, n_states, n_solids, warn_list,
+        has_solid_stress, has_vonm, has_solid_vonmises,
+        has_solid_eps, has_epsp,
+        has_solid_internal_energy, has_solid_strain, _tensor_to_voigt
+    )
 
-    if shell_stress is not None and rotate_shell_stress:
-        for i, state in enumerate(series.states):
-            R = compute_shell_local_frames(state.points, model.shell_conn)
-            shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
-
-        for w_idx in range(len(warn_list)):
-            if "shell stress" in warn_list[w_idx] or "2DELEM_Stress" in warn_list[w_idx]:
-                warn_list[w_idx] = (
-                    warn_list[w_idx]
-                    .replace(
-                        "element-local coordinates (from anim_to_vtk); von Mises / principal invariants are exact, but raw component values differ from global frame",
-                        "rotated to global frame (using standard diagonal-based local frame)",
-                    )
-                    .replace(
-                        "element-local coordinates; von Mises / principal invariants are exact",
-                        "rotated to global frame",
-                    )
-                    .replace(", element-local coordinates", ", rotated to global frame")
-                )
-
-    # ================================================================
-    # === Solid plastic strain (n_states, n_solids, 1) ===
-    # ================================================================
-    solid_eps = None
-    solid_eps_fill: list[int] = []
-    if has_solid_eps:
-        solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "3DELEM_Plastic_Strain" in state.cell_data:
-                eps = state.cell_data["3DELEM_Plastic_Strain"][model.solid_src]
-                solid_eps[i, :, 0] = eps.astype(ftype)
-            else:
-                solid_eps_fill.append(i)
-    elif has_epsp and n_solids > 0:
-        # C1 fix: port-dialect solids get EPSP
-        solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "EPSP" in state.cell_data:
-                solid_eps[i, :, 0] = state.cell_data["EPSP"][model.solid_src].astype(ftype)
-            else:
-                solid_eps_fill.append(i)
-
-    # ================================================================
-    # === Shell internal energy (n_states, n_shells) ===
-    # ================================================================
-    shell_internal_energy = None
-    shell_internal_energy_fill: list[int] = []
-    if has_shell_internal_energy:
-        shell_internal_energy = np.zeros((n_states, n_shells), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "2DELEM_Specific_Energy" in state.cell_data:
-                ie = state.cell_data["2DELEM_Specific_Energy"][model.shell_src]
-                shell_internal_energy[i, :] = ie.astype(ftype)
-            else:
-                shell_internal_energy_fill.append(i)
-
-    # ================================================================
-    # === Solid internal energy (mapped to history variables) ===
-    # ================================================================
-    solid_history_vars = None
-    solid_history_vars_fill: list[int] = []
-    if has_solid_internal_energy:
-        warn_list.append(
-            "solid internal energy mapped to element_solid_history_variables (index 0)"
-        )
-        solid_history_vars = np.zeros((n_states, n_solids, 1, 1), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "3DELEM_Specific_Energy" in state.cell_data:
-                ie = state.cell_data["3DELEM_Specific_Energy"][model.solid_src]
-                solid_history_vars[i, :, 0, 0] = ie.astype(ftype)
-            else:
-                solid_history_vars_fill.append(i)
-
-    # ================================================================
-    # === Shell plastic strain ===
-    # ================================================================
-    shell_eps = None
-    shell_eps_fill: list[int] = []
-    if has_shell_eps_2layer:
-        shell_eps = np.zeros((n_states, n_shells, n_shell_layers), dtype=ftype)
-        for i, state in enumerate(series.states):
-            lo = "2DELEM_Plastic_Strain_Lower" in state.cell_data
-            hi = "2DELEM_Plastic_Strain_Upper" in state.cell_data
-            if lo:
-                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
-                    model.shell_src
-                ].astype(ftype)
-            else:
-                shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Lower"))
-            if hi:
-                shell_eps[i, :, 1] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
-                    model.shell_src
-                ].astype(ftype)
-            else:
-                shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Upper"))
-    elif has_shell_eps_upper_only:
-        # P1b fix: only upper eps exists — map into correct slot
-        shell_eps = np.zeros(
-            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
-        )
-        upper_eps_layer = min(1, (n_shell_layers if n_shell_layers > 0 else 1) - 1)
-        warn_list.append(
-            f"only 2DELEM_Plastic_Strain_Upper found (Lower missing from all states); "
-            f"mapped to layer {upper_eps_layer}"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain_Upper" in state.cell_data:
-                shell_eps[i, :, upper_eps_layer] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
-                    model.shell_src
-                ].astype(ftype)
-            else:
-                shell_eps_fill.append(i)
-    elif has_shell_eps_lower_only:
-        # P1b fix: only lower eps exists — map into layer 0
-        shell_eps = np.zeros(
-            (n_states, n_shells, n_shell_layers if n_shell_layers > 0 else 1), dtype=ftype
-        )
-        warn_list.append(
-            "only 2DELEM_Plastic_Strain_Lower found (Upper missing from all states); "
-            "mapped to layer 0"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain_Lower" in state.cell_data:
-                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
-                    model.shell_src
-                ].astype(ftype)
-            else:
-                shell_eps_fill.append(i)
-    elif has_shell_eps_single:
-        # Replicate single scalar into both layers (official with no Upper/Lower split)
-        n_layers = n_shell_layers if n_shell_layers > 0 else 1
-        shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain" in state.cell_data:
-                eps = state.cell_data["2DELEM_Plastic_Strain"][model.shell_src].astype(ftype)
-                for layer in range(n_layers):
-                    shell_eps[i, :, layer] = eps
-            else:
-                shell_eps_fill.append(i)
-    elif has_epsp and n_shells > 0:
-        n_layers = n_shell_layers if n_shell_layers > 0 else 1
-        shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "EPSP" in state.cell_data:
-                eps_val = state.cell_data["EPSP"][model.shell_src].astype(ftype)
-                for layer in range(n_layers):
-                    shell_eps[i, :, layer] = eps_val
-            else:
-                shell_eps_fill.append(i)
-
-    # ================================================================
-    # === Shell strain tensor (n_states, n_shells, 2, 6) ===
-    # ================================================================
-    # M12 S1: 2-layer wins over membrane (mirror stress precedence)
-    shell_strain = None
-    shell_strain_fill: list = []
-    if has_shell_strain_2layer:
-        n_layers = max(1, n_shell_layers)
-        upper_layer = min(1, n_layers - 1)
-        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
-        for i, state in enumerate(series.states):
-            lo_present = "2DELEM_Strain_(lower)" in state.cell_data
-            hi_present = "2DELEM_Strain_(upper)" in state.cell_data
-            if lo_present:
-                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
-                _tensor_to_voigt(t, out=shell_strain[i, :, 0, :])
-            else:
-                shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
-            if hi_present:
-                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                _tensor_to_voigt(t, out=shell_strain[i, :, upper_layer, :])
-            else:
-                shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
-        # M12: local-frame warning for strain (M1 class)
-        warn_list.append(
-            "shell strain in element-local coordinates (from anim_to_vtk); "
-            "principal invariants are exact, "
-            "but raw component values differ from global frame"
-        )
-    elif has_shell_strain_upper_only:
-        # M12 S1: only upper strain exists — duplicate into both layers
-        n_layers = max(1, n_shell_layers)
-        upper_layer = min(1, n_layers - 1)
-        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
-        warn_list.append(
-            "only 2DELEM_Strain_(upper) found (lower missing from all states); "
-            "duplicated to both layers. "
-            "shell strain in element-local coordinates (from anim_to_vtk); "
-            "principal invariants are exact, "
-            "but raw component values differ from global frame"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(upper)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
-                voigt = _tensor_to_voigt(t).astype(ftype)
-                shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, upper_layer, :] = voigt
-            else:
-                shell_strain_fill.append(i)
-    elif has_shell_strain_lower_only:
-        # M12 S1: only lower strain exists — duplicate into both layers
-        n_layers = max(1, n_shell_layers)
-        upper_layer = min(1, n_layers - 1)
-        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
-        warn_list.append(
-            "only 2DELEM_Strain_(lower) found (upper missing from all states); "
-            "duplicated to both layers. "
-            "shell strain in element-local coordinates (from anim_to_vtk); "
-            "principal invariants are exact, "
-            "but raw component values differ from global frame"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(lower)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
-                voigt = _tensor_to_voigt(t).astype(ftype)
-                shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, upper_layer, :] = voigt
-            else:
-                shell_strain_fill.append(i)
-    elif has_shell_strain_membrane:
-        n_layers = max(1, n_shell_layers)
-        upper_layer = min(1, n_layers - 1)
-        shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
-        warn_list.append(
-            "shell strain from 2DELEM_Strain_(membrane) — single layer duplicated to both layers. "
-            "shell strain in element-local coordinates (from anim_to_vtk); "
-            "principal invariants are exact, "
-            "but raw component values differ from global frame"
-        )
-        for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(membrane)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(membrane)"][model.shell_src]
-                voigt = _tensor_to_voigt(t).astype(ftype)
-                shell_strain[i, :, 0, :] = voigt
-                shell_strain[i, :, upper_layer, :] = voigt
-            else:
-                shell_strain_fill.append(i)
-
-    # ================================================================
-    # === Solid strain tensor (n_states, n_solids, 1, 6) ===
-    # ================================================================
-    solid_strain = None
-    solid_strain_fill: list[int] = []
-    if has_solid_strain:
-        solid_strain = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "3DELEM_Strain" in state.cell_data:
-                t = state.cell_data["3DELEM_Strain"][model.solid_src]  # (n_solids, 3, 3)
-                _tensor_to_voigt(t, out=solid_strain[i, :, 0, :])
-            else:
-                solid_strain_fill.append(i)
-
-    # ================================================================
-    # === Shell thickness (n_states, n_shells) ===
-    # ================================================================
-    shell_thickness = None
-    shell_thickness_fill: list[int] = []
-    if has_shell_thickness:
-        shell_thickness = np.zeros((n_states, n_shells), dtype=ftype)
-        for i, state in enumerate(series.states):
-            if "2DELEM_Thickness" in state.cell_data:
-                shell_thickness[i, :] = state.cell_data["2DELEM_Thickness"][model.shell_src].astype(
-                    ftype
-                )
-            else:
-                shell_thickness_fill.append(i)
+    shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill = _build_shell_results(
+        series, model, ftype, n_states, n_shells, n_shell_layers, warn_list, rotate_shell_stress,
+        has_shell_stress_2layer, has_shell_stress_membrane, has_shell_stress_upper_only,
+        has_shell_stress_lower_only, has_shell_vonmises_official, has_vonm,
+        has_shell_eps_2layer, has_shell_eps_upper_only, has_shell_eps_lower_only,
+        has_shell_eps_single, has_epsp,
+        has_shell_internal_energy,
+        has_shell_strain_2layer, has_shell_strain_upper_only, has_shell_strain_lower_only,
+        has_shell_strain_membrane,
+        has_shell_thickness, _tensor_to_voigt, rotate_stress_to_global, compute_shell_local_frames
+    )
 
     # ================================================================
     # === Element alive (from OFF or EROSION_STATUS) — M6 fix: added beam alive ===
