@@ -12,7 +12,7 @@ try:
     a2d = readAndConvert(file_stem, use_shell_mask=True, silent=False,
                          no_warnings=False, show_rigidwall=True)
     print("RESULT OK")
-except Exception:
+except Exception:  # noqa: BLE001
     traceback.print_exc()
     print("RESULT FAILED")
     sys.exit(2)

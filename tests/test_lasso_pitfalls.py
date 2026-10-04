@@ -81,3 +81,36 @@ def test_lasso_node_displacement_absolute(tmp_path):
     r = D3plot(str(out))
     # It reads back the absolute coordinates
     assert np.allclose(r.arrays[ArrayType.node_displacement][1], [[12.0, 0, 0]])
+
+
+def test_lasso_sph_patch(tmp_path):
+    d3 = D3plot()
+    d3.arrays[ArrayType.node_coordinates] = np.zeros((1, 3), dtype=np.float32)
+    d3.arrays[ArrayType.node_ids] = np.array([1], dtype=np.int32)
+    
+    # Add an SPH particle
+    d3.arrays[ArrayType.sph_node_indexes] = np.array([0], dtype=np.int32)
+    d3.arrays[ArrayType.sph_node_material_index] = np.array([0], dtype=np.int32)
+    d3.arrays[ArrayType.part_ids] = np.array([1], dtype=np.int32)
+    
+    d3.arrays[ArrayType.global_timesteps] = np.array([0.0], dtype=np.float32)
+    d3.arrays[ArrayType.node_displacement] = np.zeros((1, 1, 3), dtype=np.float32)
+    
+    # In order to trigger SPH state write, we need to add a state array for SPH
+    # and update the header.
+    d3.arrays[ArrayType.sph_deletion] = np.array([[1.0]], dtype=np.float32)
+    
+    # We must explicitly set nmsph and numsph in header for write_states_sph
+    d3.header.nmsph = 1
+    d3.header.numsph = 1
+    
+    # Write should succeed due to our patch. Without the patch, it raises RuntimeError
+    out = tmp_path / "test_sph.d3plot"
+    
+    # First make sure the patch is applied by importing our package
+    
+    d3.write_d3plot(str(out))
+    
+    # Read back to verify
+    r = D3plot(str(out))
+    assert r.header.n_sph_nodes == 1

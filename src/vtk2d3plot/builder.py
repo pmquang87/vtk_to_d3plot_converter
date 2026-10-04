@@ -753,14 +753,14 @@ def build_d3plot(
         )
 
 
-    solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, solid_history_vars_fill, solid_strain, solid_strain_fill = _build_solid_results(
+    solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, _solid_history_vars_fill, solid_strain, solid_strain_fill = _build_solid_results(
         series, model, ftype, n_states, n_solids, warn_list,
         has_solid_stress, has_vonm, has_solid_vonmises,
         has_solid_eps, has_epsp,
         has_solid_internal_energy, has_solid_strain, _tensor_to_voigt
     )
 
-    shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill = _build_shell_results(
+    shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, _shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill = _build_shell_results(
         series, model, ftype, n_states, n_shells, n_shell_layers, warn_list, rotate_shell_stress,
         has_shell_stress_2layer, has_shell_stress_membrane, has_shell_stress_upper_only,
         has_shell_stress_lower_only, has_shell_vonmises_official, has_vonm,

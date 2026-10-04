@@ -163,6 +163,11 @@ def convert(
             # Backup pre-existing files
             for f in pre_existing:
                 bak_path = f.with_name(f.name + ".bak")
+                if bak_path.exists():
+                    try:
+                        bak_path.unlink()
+                    except OSError:
+                        pass
                 if f.exists():
                     shutil.move(str(f), str(bak_path))
                     bak_files[f] = bak_path
