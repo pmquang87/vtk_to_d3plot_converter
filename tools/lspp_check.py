@@ -82,7 +82,7 @@ def check_d3plot(
                 _dp = _D3plot(str(d3))
                 _ts = _dp.arrays.get(ArrayType.global_timesteps)
                 _n = len(_ts) if _ts is not None else 1
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _n = 1
             lines.append(f"state {_n};")
         lines += [f"fringe {FRINGE_IDS.get(fringe, fringe)}", "pfringe",
@@ -95,32 +95,43 @@ def check_d3plot(
     cfile.write_text("\n".join(lines) + "\n", encoding="ascii")
 
     t0 = time.time()
-    proc = subprocess.run(
-        [exe, f"c={cfile}"],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            [exe, f"c={cfile}"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        stdout_text = proc.stdout or ""
+        stderr_text = proc.stderr or ""
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout_text = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr_text = (exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        returncode = -1
+
     msg_file = workdir / "lspost.msg"
     msg = msg_file.read_text(errors="replace") if msg_file.is_file() else ""
-    blob = msg + "\n" + (proc.stdout or "") + "\n" + (proc.stderr or "")
+    blob = msg + "\n" + stdout_text + "\n" + stderr_text
 
     m = re.search(r"Total number of states\s*=\s*(\d+)", blob)
     n_states = int(m.group(1)) if m else None
     finished = "Finished reading model" in blob
     invalid = [ln for ln in blob.splitlines() if "Invalid command" in ln]
-    loaded = proc.returncode == 0 and finished and not invalid
+    loaded = returncode == 0 and finished and not invalid
+
 
     return {
         "loaded": loaded,
         "n_states": n_states,
-        "exit_code": proc.returncode,
+        "exit_code": returncode,
         "wordsize": 8 if "64-bit ieee" in blob else (4 if "32-bit ieee" in blob else None),
         "elapsed_s": round(time.time() - t0, 1),
         "msg": str(msg_file),
         "detail": ("ok" if loaded else
-                   f"finished={finished} invalid={invalid[:3]} rc={proc.returncode}"),
+                   f"finished={finished} invalid={invalid[:3]} rc={returncode}"),
     }
 
 

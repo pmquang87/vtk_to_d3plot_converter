@@ -12,3 +12,12 @@ dist/
 lspost.msg
 lspost.cfile
 *.png.tmp
+
+# local debug / scratch outputs (never commit)
+tests/data/debug_out.*
+tests/data/tet1.d3plot*
+tests/data/tet2.d3plot*
+tests/data/one_tet.d3plot
+tmp_test_dir/
+scratch*.py
+*_output.txt

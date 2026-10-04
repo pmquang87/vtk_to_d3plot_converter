@@ -49,5 +49,4 @@ for idx, f in enumerate(vtks):
     lut = {int(v): k for k, v in enumerate(d_ids)}
     perm = np.array([lut[int(v)] for v in vids])
     diff = np.abs(nd[idx][perm] - pts)
-    print("state %2d t_vtk=%-12s t_d3=%-20s nodes=%d cells=%d  max|dxyz|=%.4e  mean=%.3e"
-          % (idx, tv, float(t[idx]), n_pts, n_cells, diff.max(), diff.mean()))
+    print(f"state {idx:2d} t_vtk={tv:<12} t_d3={float(t[idx]):<20} nodes={n_pts} cells={n_cells}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}")

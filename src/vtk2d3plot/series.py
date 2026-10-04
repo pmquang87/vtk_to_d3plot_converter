@@ -57,7 +57,7 @@ class TopologyError(Exception):
 def find_t01_csv(vtk_paths: list[Path]) -> Path | None:
     if not vtk_paths:
         return None
-    stem_re = re.compile(r"^(.*?)A(\d+)\.vtk$", re.IGNORECASE)
+    stem_re = re.compile(r"^(.*?)A(\d+)\.(vtk|vtu)$", re.IGNORECASE)
     match = stem_re.match(vtk_paths[0].name)
     if not match:
         return None
@@ -72,6 +72,9 @@ def parse_t01_csv(path: Path) -> T01Data:
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
+    if len(lines) < 2:
+        return T01Data(times=np.array([]), columns={})
+
     header_line = lines[1].strip()
     headers = [h.strip() for h in header_line.split(",")]
 
@@ -82,7 +85,10 @@ def parse_t01_csv(path: Path) -> T01Data:
             continue
         data.append([float(x) for x in line.split(",")])
 
-    data = np.array(data)
+    if not data:
+        data = np.empty((0, len(headers)))
+    else:
+        data = np.array(data)
     if "TIME" not in headers:
         raise ValueError("TIME column missing from T01 CSV")
 
@@ -329,7 +335,7 @@ def load_series_lazy(
     for i in range(1, len(paths)):
         if progress_cb:
             progress_cb(i, len(paths))
-        state = read_vtk(paths[i])
+        state = read_vtk(paths[i], metadata_only=True)
         fname = filenames[i]
         if state.time is None:
             raise ValueError(f"Time is None for file {fname}")

@@ -53,5 +53,4 @@ perm = np.array([lut[int(v)] for v in vids0[nz]])
 for idx, f in enumerate(vtks):
     _, ncell, pts, vids, tv = parse_vtk(os.path.join(vtk_dir, f))
     diff = np.abs(nd[idx][perm] - pts[sel])
-    print("state %2d t_vtk=%-12s t_d3=%-20s matched=%d cells=%d  max|dxyz|=%.4e  mean=%.3e"
-          % (idx, tv, float(t[idx]), sel.size, ncell, diff.max(), diff.mean()))
+    print(f"state {idx:2d} t_vtk={tv:<12} t_d3={float(t[idx]):<20} matched={sel.size} cells={ncell}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}")
