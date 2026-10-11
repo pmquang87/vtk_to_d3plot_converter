@@ -1,56 +1,80 @@
-import os
-import sys
+"""Zero-NODE_ID diagnostic: compare a d3plot with its VTK series on non-zero IDs only.
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+Usage:
+    .venv\\Scripts\\python.exe tools\\reference\\verify_zug.py <d3plot> <vtk_dir>
+
+VTK files are paired with d3plot states in the converter's order (numeric
+``A(\\d+)`` suffix, see ``verify_byid.ordered_vtk_files``); the file count and
+every state time are checked (FIELD TIME, else ``t=`` in the title), and a
+pairing mismatch prints ERROR and exits with code 2. The NODE_ID array must
+exist and be the same in every state (else ERROR, exit 2); states without a
+time are reported with a WARNING.
+"""
+
+import sys
+from pathlib import Path
+
 import numpy as np
 from lasso.dyna.d3plot import D3plot
 
-
-def parse_vtk(path):
-    with open(path, "r", errors="replace") as f:
-        lines = f.readlines()
-    n_pts = None; pts = None; node_ids = None; tv = None; n_cells = None
-    i = 0
-    while i < len(lines):
-        L = lines[i]
-        if L.startswith("TIME"):
-            tv = float(lines[i + 1].split()[0])
-        elif L.startswith("POINTS"):
-            n_pts = int(L.split()[1]); vals = []; j = i + 1
-            while len(vals) < n_pts * 3:
-                vals.extend(lines[j].split()); j += 1
-            pts = np.array(vals, dtype=float).reshape(n_pts, 3); i = j; continue
-        elif L.startswith("CELLS"):
-            n_cells = int(L.split()[1])
-        elif L.startswith("SCALARS NODE_ID"):
-            vals = []; j = i + 2
-            while len(vals) < n_pts:
-                vals.extend(lines[j].split()); j += 1
-            node_ids = np.array(vals, dtype=np.int64); i = j; continue
-        i += 1
-    return n_pts, n_cells, pts, node_ids, tv
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_byid import TIME_RTOL, ordered_vtk_files, parse_vtk, warn_untimed
 
 
-d3, vtk_dir = sys.argv[1], sys.argv[2]
-p = D3plot(d3)
-d_ids = np.asarray(p.arrays["node_ids"]).astype(np.int64)
-nd = p.arrays["node_displacement"]
-t = np.asarray(p.arrays["timesteps"])
+def main(argv=None) -> int:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    argv = sys.argv[1:] if argv is None else argv
+    d3, vtk_dir = argv[0], argv[1]
+    p = D3plot(d3)
+    d_ids = np.asarray(p.arrays["node_ids"]).astype(np.int64)
+    nd = p.arrays["node_displacement"]
+    t = np.asarray(p.arrays["timesteps"], dtype=np.float64)
 
-vtks = sorted(f for f in os.listdir(vtk_dir) if f.endswith(".vtk"))
-_, _, _, vids0, _ = parse_vtk(os.path.join(vtk_dir, vtks[0]))
-nzero = int((vids0 == 0).sum())
-print("VTK nodes with NODE_ID == 0 :", nzero, "of", vids0.size)
-print("d3plot n_nodes              :", d_ids.size)
-print("d3plot max node id          :", int(d_ids.max()))
-print("VTK    max node id          :", int(vids0.max()))
-nz = vids0 != 0
-print("non-zero VTK ids all present in d3plot ids:",
-      bool(np.isin(vids0[nz], d_ids).all()))
-lut = {int(v): k for k, v in enumerate(d_ids)}
-sel = np.flatnonzero(nz)
-perm = np.array([lut[int(v)] for v in vids0[nz]])
-for idx, f in enumerate(vtks):
-    _, ncell, pts, vids, tv = parse_vtk(os.path.join(vtk_dir, f))
-    diff = np.abs(nd[idx][perm] - pts[sel])
-    print(f"state {idx:2d} t_vtk={tv:<12} t_d3={float(t[idx]):<20} matched={sel.size} cells={ncell}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}")
+    vtks = ordered_vtk_files(vtk_dir)
+    if len(vtks) != len(t):
+        print(f"ERROR: {len(vtks)} VTK files but {len(t)} d3plot states - cannot pair them")
+        return 2
+    _, _, _, vids0, _ = parse_vtk(vtks[0])
+    if vids0 is None:
+        print(f"ERROR: {vtks[0].name} has no NODE_ID array - use verify_byid.py instead")
+        return 2
+    nzero = int((vids0 == 0).sum())
+    print("VTK nodes with NODE_ID == 0 :", nzero, "of", vids0.size)
+    print("d3plot n_nodes              :", d_ids.size)
+    print("d3plot max node id          :", int(d_ids.max()))
+    print("VTK    max node id          :", int(vids0.max()))
+    nz = vids0 != 0
+    print("non-zero VTK ids all present in d3plot ids:", bool(np.isin(vids0[nz], d_ids).all()))
+    lut = {int(v): k for k, v in enumerate(d_ids)}
+    sel = np.flatnonzero(nz)
+    perm = np.array([lut[int(v)] for v in vids0[nz]])
+    t_scale = max(float(np.abs(t).max()), np.finfo(float).tiny)
+    errors = 0
+    n_untimed = 0
+    for idx, f in enumerate(vtks):
+        _, ncell, pts, vids, tv = parse_vtk(f)
+        if vids is None or not np.array_equal(vids, vids0):
+            print(f"ERROR: NODE_ID array of {f.name} differs from {vtks[0].name}")
+            errors += 1
+            continue
+        diff = np.abs(nd[idx][perm] - pts[sel])
+        t_d3 = float(t[idx])
+        flag = ""
+        if tv is None:
+            n_untimed += 1
+        elif abs(tv - t_d3) > TIME_RTOL * t_scale:
+            flag = "  ERROR: time mismatch, wrong VTK/state pairing"
+            errors += 1
+        print(
+            f"state {idx:2d} {f.name} t_vtk={tv!s:<12} t_d3={t_d3:<20} matched={sel.size} "
+            f"cells={ncell}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}{flag}"
+        )
+    warn_untimed(n_untimed)
+    if errors:
+        print(f"ERROR: {errors} state(s) could not be paired with their VTK file")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
