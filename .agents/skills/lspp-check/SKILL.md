@@ -23,7 +23,14 @@ build `...[4.13]DP\lsprepost4.13DP.exe` also exists.)
 
 It returns/prints a JSON summary: `loaded` (bool), `n_states`, `wordsize`,
 plus the raw `lspost.msg` path for diagnosis. Every result dict has the same
-keys, including `cfile` and `path_notes`.
+keys, including `cfile`, `path_notes` and `notes`.
+
+- `wordsize`: LS-PrePost 4.13 prints ` d3plot files are 64-bit ieee format`
+  (stdout) for a 64-bit family and nothing for a 32-bit one. So 8 comes from
+  that line; otherwise, once the model loaded, the word size is read from the
+  d3plot header. A disagreement between the two goes into `notes`.
+- `notes` / `detail`: if lasso cannot read the state count for a `--fringe`
+  without `--state`, the fringe is shown at state 1 and a note says so.
 
 - `--state N` (1-based) is honoured with or without `--fringe`; without
   `--state`, `--fringe` shows the last state (bug report 2026-10-11 #25).

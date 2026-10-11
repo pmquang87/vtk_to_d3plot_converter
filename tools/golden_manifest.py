@@ -18,17 +18,24 @@ Line-ending rule (text vs binary):
     and on a CRLF checkout (Windows, core.autocrlf=true) alike. All other files
     (d3plot families, binary ANIM files) are hashed and sized raw.
 
-Verify fails (exit code 1) on any MISSING, CHANGED, SIZE or NEW file. NEW
-files (on disk, not in the manifest) count as errors, so an added fixture or a
-truncated manifest cannot pass.
+Verify fails (exit code 1) on any MISSING, CHANGED, SIZE or NEW file or BAD
+LINE. NEW files (on disk, not in the manifest) count as errors, so an added
+fixture or a truncated manifest cannot pass. A file that is both CHANGED and
+SIZE is one mismatch. Legacy lines without a size (``<sha>  <path>``) are
+still read; paths may contain double spaces.
+
+``generate`` hashes every file before it writes anything and then replaces the
+manifest atomically, so a failure part-way leaves the old manifest unchanged.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -100,16 +107,36 @@ def _collect_files(root: Path = DATA_DIR) -> list[Path]:
 
 
 def generate(root: Path = DATA_DIR, manifest: Path | None = None) -> int:
+    """Write the manifest for ``root``.
+
+    Every file is hashed first; only then is the manifest written, to a temp
+    file in the same folder that replaces the old manifest in one step. An
+    error or Ctrl+C part-way leaves the old manifest unchanged.
+    """
     manifest = manifest or root / "golden" / MANIFEST_NAME
     files = _collect_files(root)
-    with manifest.open("w", encoding="utf-8", newline="\n") as out:
-        out.write(MANIFEST_HEADER)
-        for filepath in files:
-            rel_path = filepath.relative_to(root).as_posix()
-            sha, size = hash_and_size(filepath)
-            out.write(f"{sha}  {size}  {rel_path}\n")
+    lines = [MANIFEST_HEADER]
+    for filepath in files:
+        rel_path = filepath.relative_to(root).as_posix()
+        sha, size = hash_and_size(filepath)
+        lines.append(f"{sha}  {size}  {rel_path}\n")
+    fd, tmp = tempfile.mkstemp(prefix=manifest.name + ".", suffix=".tmp", dir=manifest.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as out:
+            out.writelines(lines)
+        os.replace(tmp, manifest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     print(f"Generated manifest with {len(files)} files -> {manifest}")
     return len(files)
+
+
+# Manifest lines: "<sha>  <size>  <path>" (current) or "<sha>  <path>" (legacy).
+# The path is the rest of the line and may itself hold double spaces. A legacy
+# path that is all digits followed by two spaces would read as a size; manifest
+# paths start with golden/ or port_dialect/, so that cannot happen.
+_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})  (?:(\d+)  )?(.+)$")
 
 
 def verify(root: Path = DATA_DIR, manifest: Path | None = None) -> int:
@@ -124,17 +151,16 @@ def verify(root: Path = DATA_DIR, manifest: Path | None = None) -> int:
     manifest_entries = set()
     with manifest.open("r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+            line = line.rstrip("\r\n")
+            if not line.strip() or line.startswith("#"):
                 continue
-            parts = line.split("  ", 2)
-            if len(parts) == 3:
-                expected_sha, expected_size, rel_path = parts
-                expected_size = int(expected_size)
-            else:
-                # Legacy format without size
-                expected_sha, rel_path = line.split("  ", 1)
-                expected_size = None
+            m = _LINE_RE.match(line)
+            if m is None:
+                print(f"  BAD LINE: {line!r}")
+                errors += 1
+                continue
+            expected_sha, size_text, rel_path = m.groups()
+            expected_size = None if size_text is None else int(size_text)  # None: legacy line
             manifest_entries.add(rel_path)
             filepath = root / rel_path
             if not filepath.exists():
@@ -142,12 +168,14 @@ def verify(root: Path = DATA_DIR, manifest: Path | None = None) -> int:
                 errors += 1
             else:
                 actual_sha, actual_size = hash_and_size(filepath)
-                if actual_sha != expected_sha:
+                bad = False
+                if actual_sha != expected_sha.lower():
                     print(f"  CHANGED: {rel_path}")
-                    errors += 1
+                    bad = True
                 if expected_size is not None and actual_size != expected_size:
                     print(f"  SIZE: {rel_path} (expected {expected_size}, got {actual_size})")
-                    errors += 1
+                    bad = True
+                errors += bad  # one mismatch per file, even with both lines printed
             checked += 1
 
     # Files on disk that the manifest does not list are errors too: an added

@@ -15,12 +15,15 @@ was converted from):
 - The number of VTK files must equal the number of d3plot states, and each
   state time must match the VTK time (relative to the largest time, 1e-5,
   because anim_to_vtk prints TIME with 6 significant digits). Otherwise the
-  script prints ERROR and exits with code 2. The VTK time is the FIELD TIME
-  value (official dialect) or, without it, ``t=<value>`` in the title line
-  (port dialect). States without any time are not time-checked; the script
-  then prints a WARNING with their count.
+  script prints ERROR and exits with code 2. The same holds for .vtk files of
+  more than one series (stem) in the folder; files without an ``A<digits>``
+  state number (e.g. notes.vtk) are ignored, as by the converter. The VTK
+  time is the FIELD TIME value (official dialect) or, without it,
+  ``t=<value>`` in the title line (port dialect). States without any time are
+  not time-checked; the script then prints a WARNING with their count.
 
-Exit codes: 0 = compared, 2 = pairing error (count, time or node-ID mismatch).
+Exit codes: 0 = compared, 2 = pairing error (count, time, stem or node-ID
+mismatch).
 """
 
 import re
@@ -116,7 +119,11 @@ def main(argv=None) -> int:
     nd = p.arrays["node_displacement"]
     t = np.asarray(p.arrays["timesteps"], dtype=np.float64)
 
-    vtks = ordered_vtk_files(vtk_dir)
+    try:
+        vtks = ordered_vtk_files(vtk_dir)
+    except ValueError as exc:  # e.g. .vtk files of two series in one folder
+        print(f"ERROR: {exc}")
+        return 2
     if len(vtks) != len(t):
         print(f"ERROR: {len(vtks)} VTK files but {len(t)} d3plot states - cannot pair them")
         return 2

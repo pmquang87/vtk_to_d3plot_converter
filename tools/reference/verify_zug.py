@@ -1,4 +1,4 @@
-"""Zero-NODE_ID diagnostic: compare a d3plot with its VTK series on non-zero IDs only.
+"""Zero-NODE_ID diagnostic: compare a d3plot with its VTK series, zero-ID nodes apart.
 
 Usage:
     .venv\\Scripts\\python.exe tools\\reference\\verify_zug.py <d3plot> <vtk_dir>
@@ -6,10 +6,15 @@ Usage:
 VTK files are paired with d3plot states in the converter's order (numeric
 ``A(\\d+)`` suffix, see ``verify_byid.ordered_vtk_files``); the file count and
 every state time are checked (FIELD TIME, else ``t=`` in the title), and a
-pairing mismatch prints ERROR and exits with code 2. The NODE_ID array must
-exist and be the same in every state (else ERROR, exit 2), and every non-zero
-VTK node ID must exist in the d3plot (else ERROR, exit 2); states without a
-time are reported with a WARNING.
+pairing mismatch (also .vtk files of two series in one folder) prints ERROR
+and exits with code 2. The NODE_ID array must exist and be the same in every
+state (else ERROR, exit 2), and every non-zero VTK node ID must exist in the
+d3plot (else ERROR, exit 2); states without a time are reported with a WARNING.
+
+Per state, the ``state`` line compares the nodes with a non-zero VTK ID. The
+nodes with NODE_ID 0 get the converter's IDs (max+1, max+2, ... see
+``verify_byid.converter_node_ids``) and are compared on their own
+``zero-ID`` line under it; such an ID missing in the d3plot is an ERROR (exit 2).
 """
 
 import sys
@@ -19,7 +24,13 @@ import numpy as np
 from lasso.dyna.d3plot import D3plot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_byid import TIME_RTOL, ordered_vtk_files, parse_vtk, warn_untimed
+from verify_byid import (
+    TIME_RTOL,
+    converter_node_ids,
+    ordered_vtk_files,
+    parse_vtk,
+    warn_untimed,
+)
 
 
 def main(argv=None) -> int:
@@ -31,7 +42,11 @@ def main(argv=None) -> int:
     nd = p.arrays["node_displacement"]
     t = np.asarray(p.arrays["timesteps"], dtype=np.float64)
 
-    vtks = ordered_vtk_files(vtk_dir)
+    try:
+        vtks = ordered_vtk_files(vtk_dir)
+    except ValueError as exc:  # e.g. .vtk files of two series in one folder
+        print(f"ERROR: {exc}")
+        return 2
     if len(vtks) != len(t):
         print(f"ERROR: {len(vtks)} VTK files but {len(t)} d3plot states - cannot pair them")
         return 2
@@ -53,6 +68,15 @@ def main(argv=None) -> int:
         return 2
     sel = np.flatnonzero(nz)
     perm = np.array([lut[int(v)] for v in vids0[nz]])
+    # Zero-ID nodes: the converter's renumbered IDs (max+1, ...), looked up the same way.
+    zsel = np.flatnonzero(~nz)
+    zids = converter_node_ids(vtks[0])[zsel]
+    print("zero-ID nodes renumbered to :", zids.tolist())
+    zmissing = [int(v) for v in zids if int(v) not in lut]
+    if zmissing:
+        print(f"ERROR: renumbered zero-ID node IDs not in the d3plot: {zmissing[:5]}")
+        return 2
+    zperm = np.array([lut[int(v)] for v in zids], dtype=np.int64)
     t_scale = max(float(np.abs(t).max()), np.finfo(float).tiny)
     errors = 0
     n_untimed = 0
@@ -74,6 +98,9 @@ def main(argv=None) -> int:
             f"state {idx:2d} {f.name} t_vtk={tv!s:<12} t_d3={t_d3:<20} matched={sel.size} "
             f"cells={ncell}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}{flag}"
         )
+        if zsel.size:
+            zdiff = np.abs(nd[idx][zperm] - pts[zsel])
+            print(f"   zero-ID {f.name} ids={zids.tolist()} max|dxyz|={zdiff.max():.4e}")
     warn_untimed(n_untimed)
     if errors:
         print(f"ERROR: {errors} state(s) could not be paired with their VTK file")
