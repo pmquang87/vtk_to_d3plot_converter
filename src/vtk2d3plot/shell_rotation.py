@@ -1,8 +1,8 @@
-"""Element-local -> global rotation of shell stress (``rotate_shell_stress``).
+"""Element-local -> global rotation of shell stress and strain (``rotate_shell_stress``).
 
-anim_to_vtk writes shell stress in the OpenRadioss element frame. This module
-rebuilds that frame from the deformed nodal coordinates and rotates the
-tensors to the global frame that d3plot expects.
+anim_to_vtk writes shell stress and strain in the OpenRadioss element frame.
+This module rebuilds that frame from the deformed nodal coordinates and rotates
+the tensors to the global frame that d3plot expects.
 
 Voigt slot convention (used for input AND output): the d3plot / builder
 order ``[xx, yy, zz, xy, yz, zx]`` (LS-DYNA database manual, Jan 2023, p. 46:
@@ -107,6 +107,11 @@ def degenerate_shell_frames(R: np.ndarray, tol: float = 1e-6) -> np.ndarray:
 def rotate_stress_to_global(local_stress_voigt: np.ndarray, R: np.ndarray) -> np.ndarray:
     """
     Rotate local stress tensors to the global frame: S_g = R S_l R^T.
+
+    Works for any symmetric tensor whose Voigt off-diagonals are tensor
+    components, so the builder also rotates the shell strain with it (the
+    anim_to_vtk strain shear is tensorial, eps_xy = gamma_xy / 2; an
+    engineering-shear Voigt vector would first need its shear halved).
 
     Args:
         local_stress_voigt: (n_shells, n_layers, 6) Voigt stress in the d3plot /

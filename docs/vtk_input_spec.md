@@ -95,6 +95,11 @@ these automatically (they make a port file look like an official file).
   `TENSORS 2DELEM_Stress_(membrane|upper|lower) float` (3×3, zero out-of-plane
   row/col) and `TENSORS 3DELEM_Stress float` (symmetric 3×3 from Voigt), same
   for `Strain` when STRFLG is on. Zero-filled for non-applicable families.
+  `2DELEM_Strain_*` TENSORS hold tensorial shear (εxy = γxy/2): the engine's
+  ANIM writer halves the engineering shear it stores for the membrane / upper /
+  lower shell strain (OpenRadioss `tensorc.F`, `GBUF%STRA(3)*HALF`).
+  `--rotate-shell-stress` rotates the shell strain with the same element frames
+  as the shell stress, as a tensor, so it stays tensorial.
 - Nodal arrays seen in real files: `Velocity`, `Displacement`, `Acceleration`,
   `Contact_Forces`, `Tied_Contact_Forces`, `Time_Step`, `Mass_Change`,
   `Contact_Pressure_/_Normal`, `Contact_Pressure_/_Tangent`.

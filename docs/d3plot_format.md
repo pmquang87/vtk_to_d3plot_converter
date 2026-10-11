@@ -39,6 +39,18 @@ surplus, not stored. NARBS length = 16 + NUMNP + NEL8 + NEL2 + NEL4 (+NELT)
 arbitrary numbering present.
 
 Stress tensor component order everywhere: **σxx, σyy, σzz, σxy, σyz, σzx**.
+Strain (ISTRN=1) uses the same order, "in the global system" (manual Jan 2023
+p. 45, 47). The converter writes the shell strain shear tensorial
+(εxy = γxy/2), as the ANIM files and anim_to_vtk carry it; the Vortex zug
+golden holds the same convention (rotated zug shell strain matches it to
+2.1e-4, doubled shear gives 0.17).
+
+Beam connectivity IX2 (6 words): N1, N2, orientation node, two null entries,
+material (manual Jan 2023 p. 18; for some beam types the null entries carry
+the beam type and section ratios, type = ix2(5) & 0x3F). A VTK line has no
+orientation node, so vtk2d3plot writes 0 in words 3-5 (lasso index −1,
+because lasso writes index + 1). LS-PrePost 4.13 loads and draws such beams
+like before; the VTK LS-DYNA reader uses only N1, N2.
 Element shape is inferred by post-processors from repeated nodes in the
 fixed-width connectivity (degenerate padding) — see the mapping table in
 docs/plan.md.

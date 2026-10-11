@@ -16,7 +16,7 @@ class MappedModel:
     shell_conn: np.ndarray  # (n_shells, 4) int32
     shell_ids: np.ndarray  # (n_shells,) int32
     shell_part_idx: np.ndarray  # (n_shells,) int32
-    beam_conn: np.ndarray  # (n_beams, 5) int32; orientation cols zero
+    beam_conn: np.ndarray  # (n_beams, 5) int32; cols 2-4 = -1 (d3plot word 0: no orientation node)
     beam_ids: np.ndarray  # (n_beams,) int32
     beam_part_idx: np.ndarray  # (n_beams,) int32
     part_ids: np.ndarray  # (n_parts,) int32
@@ -43,9 +43,14 @@ def map_topology(state0: VtkState) -> MappedModel:
         9: [0, 1, 2, 3],  # quad
         5: [0, 1, 2, 2],  # triangle
     }
+    # d3plot beam words: N1, N2, orientation node, two null entries, material
+    # (LS-DYNA database manual Jan 2023 p. 18; the null entries may carry a beam
+    # type and section ratios). A VTK line has no orientation node, so words 3-5
+    # are 0: index -1 here, because lasso writes index + 1 (suspicions S12).
     BEAM_TYPES = {
-        3: [0, 1, 0, 0, 0],  # line
+        3: [0, 1],  # line
     }
+    beam_null = np.full(3, -1, dtype=np.int64)
 
     n_nodes = state0.points.shape[0]
 
@@ -87,7 +92,7 @@ def map_topology(state0: VtkState) -> MappedModel:
             shell_src_list.append(i)
         elif ct in BEAM_TYPES:
             mapping = BEAM_TYPES[ct]
-            conn = cell[mapping]
+            conn = np.concatenate([cell[mapping], beam_null])
             beams.append(conn)
             beam_src_list.append(i)
         else:
