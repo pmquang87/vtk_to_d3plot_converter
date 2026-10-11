@@ -82,6 +82,28 @@ def compute_shell_local_frames(points: np.ndarray, shell_conn: np.ndarray) -> np
     return R
 
 
+def degenerate_shell_frames(R: np.ndarray, tol: float = 1e-6) -> np.ndarray:
+    """
+    Flag shells whose local frame could not be built (zero-area or collapsed
+    geometry: r x s = 0 for quads, (x2 - x1) x (x3 - x1) = 0 for triangles).
+
+    compute_shell_local_frames returns zero axes for such shells (all three for
+    a collapsed quad; e2 and e3 for a zero-area triangle), so
+    rotate_stress_to_global zeroes or partly drops their stress. Callers must
+    warn about the True entries (count) instead of failing silently.
+
+    Args:
+        R: (n_shells, 3, 3) frames from compute_shell_local_frames
+        tol: allowed deviation of det(R) from +1
+
+    Returns:
+        (n_shells,) bool, True where R is not a proper rotation.
+    """
+    if len(R) == 0:
+        return np.zeros(0, dtype=bool)
+    return np.abs(np.linalg.det(R.astype(np.float64)) - 1.0) > tol
+
+
 def rotate_stress_to_global(local_stress_voigt: np.ndarray, R: np.ndarray) -> np.ndarray:
     """
     Rotate local stress tensors to the global frame: S_g = R S_l R^T.

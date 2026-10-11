@@ -126,6 +126,48 @@ def test_c06_triangle_frame_unchanged_n1n2():
     np.testing.assert_allclose(R[0], np.stack([e1, np.cross(e3, e1), e3], axis=-1), atol=1e-14)
 
 
+def test_c06_degenerate_frames_are_flagged():
+    """Bug report 2026-10-11 #1 (c06), verifier follow-up: shells whose frame
+    cannot be built (collapsed quad, zero-area triangle) get zero axes and their
+    rotated stress is wrong (zeroed or partly lost). degenerate_shell_frames
+    must flag exactly those shells so the caller can warn instead of failing
+    silently."""
+    from vtk2d3plot.shell_rotation import (
+        compute_shell_local_frames,
+        degenerate_shell_frames,
+        rotate_stress_to_global,
+    )
+
+    pts = np.array(
+        [
+            [0.0, 0.0, 0.0],  # 0
+            [1.0, 0.0, 0.0],  # 1
+            [1.0, 1.0, 0.0],  # 2
+            [0.0, 1.0, 0.0],  # 3
+            [2.0, 0.0, 0.0],  # 4 (collinear with 0, 1)
+        ]
+    )
+    conn = np.array(
+        [
+            [0, 1, 2, 3],  # good quad
+            [0, 0, 0, 0],  # quad collapsed to a point
+            [0, 1, 2, 2],  # good triangle
+            [0, 1, 4, 4],  # zero-area triangle (collinear)
+        ]
+    )
+    R = compute_shell_local_frames(pts, conn)
+    np.testing.assert_array_equal(degenerate_shell_frames(R), [False, True, False, True])
+    # the flagged shells really get wrong stress under rotation: the collapsed
+    # quad has R = 0 (all zero), the collinear triangle keeps only e1 = +x, so
+    # only local xx survives (yy and xy are lost)
+    local = np.tile(np.array([100.0, 50.0, 0.0, 10.0, 0.0, 0.0]), (4, 1, 1))
+    g = rotate_stress_to_global(local, R)
+    np.testing.assert_array_equal(g[1], 0.0)
+    np.testing.assert_allclose(g[3, 0], [100.0, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(g[0, 0], [100.0, 50.0, 0.0, 10.0, 0.0, 0.0], atol=1e-12)
+    assert degenerate_shell_frames(np.empty((0, 3, 3))).shape == (0,)
+
+
 # ---------------------------------------------------------------- #2 (c07)
 
 
