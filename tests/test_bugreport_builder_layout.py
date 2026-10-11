@@ -338,6 +338,113 @@ def test_c23_solid_histvar_and_strain_not_shifted(tmp_path, f64):
     ), rep.warnings
 
 
+def _c23_energy_only_series(tmp_path: Path) -> Path:
+    src = tmp_path / "c23e"
+    src.mkdir()
+    for i, ie in enumerate([7.0, 8.0, 9.0]):
+        _write_vtk(
+            src / f"runA{i:03d}.vtk",
+            time=0.1 * i,
+            cells=[_HEX],
+            part_ids=[1],
+            cell_scalars={"3DELEM_Specific_Energy": [ie]},
+        )
+    return src
+
+
+@pytest.mark.parametrize("f64", [True, False])
+def test_c23_solid_internal_energy_only(tmp_path, f64):
+    """Bug report 2026-10-11 #8 (c23): solids with internal energy only (no stress,
+    no strain, no plastic strain) -> the history variable reads back exactly."""
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot import convert
+
+    out = tmp_path / "c23e.d3plot"
+    rep = convert(_c23_energy_only_series(tmp_path), out, f64=f64)
+    d = _read(out)
+    hv = d.arrays[ArrayType.element_solid_history_variables]
+    assert hv.shape == (3, 1, 1, 1)
+    np.testing.assert_array_equal(hv[:, 0, 0, 0], [7.0, 8.0, 9.0])
+    np.testing.assert_array_equal(d.arrays[ArrayType.element_solid_stress], 0.0)
+    np.testing.assert_array_equal(d.arrays[ArrayType.element_solid_effective_plastic_strain], 0.0)
+    assert ArrayType.element_solid_strain not in d.arrays
+    # raw words: each state's solid record is [stress 6 = 0, eps = 0, IE]
+    ftype = np.float64 if f64 else np.float32
+    words = _family_words(out, ftype)
+    for ie in (7.0, 8.0, 9.0):
+        assert _count_subsequence(words, [0.0] * 7 + [ie]) == 1, ie
+    assert any(
+        w.startswith("element_solid_effective_plastic_strain: zero-filled at all states")
+        for w in rep.warnings
+    ), rep.warnings
+
+
+_C23_SHELL_LO = [11.0, 12.0, 0.0, 13.0, 0.0, 0.0]
+_C23_SHELL_HI = [21.0, 22.0, 0.0, 23.0, 0.0, 0.0]
+
+
+def _c23_shell_stress_series(tmp_path: Path) -> Path:
+    src = tmp_path / "c23s"
+    src.mkdir()
+    zero = np.zeros((3, 3))
+    for i, ie in enumerate([7.0, 8.0, 9.0]):
+        k = i + 1.0
+        solid = _sym(*[v * k for v in _C23_STRESS])
+        lo = _sym(*[v * k for v in _C23_SHELL_LO])
+        hi = _sym(*[v * k for v in _C23_SHELL_HI])
+        _write_vtk(
+            src / f"runA{i:03d}.vtk",
+            time=0.1 * i,
+            cells=[_QUAD, _HEX],
+            part_ids=[2, 1],
+            cell_scalars={"3DELEM_Specific_Energy": [0.0, ie]},
+            cell_tensors={
+                "3DELEM_Stress": np.array([zero, solid]),
+                "2DELEM_Stress_(lower)": np.array([lo, zero]),
+                "2DELEM_Stress_(upper)": np.array([hi, zero]),
+            },
+        )
+    return src
+
+
+@pytest.mark.parametrize("f64", [True, False])
+def test_c23_shell_stress_without_plastic_strain(tmp_path, f64):
+    """Bug report 2026-10-11 #8 (c23): shells with stress but no plastic strain anywhere,
+    plus solids with stress and internal energy -> solid history variable, solid
+    stress and shell stress (both layers) read back exactly."""
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot import convert
+
+    out = tmp_path / "c23s.d3plot"
+    convert(_c23_shell_stress_series(tmp_path), out, f64=f64)
+    d = _read(out)
+    hv = d.arrays[ArrayType.element_solid_history_variables]
+    assert hv.shape == (3, 1, 1, 1)
+    np.testing.assert_array_equal(hv[:, 0, 0, 0], [7.0, 8.0, 9.0])
+    sst = d.arrays[ArrayType.element_shell_stress]
+    assert sst.shape == (3, 1, 2, 6)
+    for i in range(3):
+        k = i + 1.0
+        np.testing.assert_array_equal(
+            d.arrays[ArrayType.element_solid_stress][i, 0, 0], [v * k for v in _C23_STRESS]
+        )
+        np.testing.assert_array_equal(sst[i, 0, 0], [v * k for v in _C23_SHELL_LO])
+        np.testing.assert_array_equal(sst[i, 0, 1], [v * k for v in _C23_SHELL_HI])
+    np.testing.assert_array_equal(d.arrays[ArrayType.element_solid_effective_plastic_strain], 0.0)
+    if ArrayType.element_shell_effective_plastic_strain in d.arrays:
+        np.testing.assert_array_equal(
+            d.arrays[ArrayType.element_shell_effective_plastic_strain], 0.0
+        )
+    # raw words: the solid record [stress 6, eps 0, IE] of every state
+    ftype = np.float64 if f64 else np.float32
+    words = _family_words(out, ftype)
+    for i, ie in enumerate((7.0, 8.0, 9.0)):
+        seq = [v * (i + 1.0) for v in _C23_STRESS] + [0.0, ie]
+        assert _count_subsequence(words, np.array(seq, dtype=ftype)) == 1, ie
+
+
 @pytest.mark.lspp
 def test_c23_lsprepost_loads(tmp_path):
     """Bug report 2026-10-11 #8 (c23): LS-PrePost opens the repaired layout."""

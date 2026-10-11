@@ -1397,7 +1397,25 @@ def _part_titles(part_ids: np.ndarray, part_names: dict[int, str] | None, warn_l
     and shifts every later one (bug report 2026-10-11 #9).  The 72-character
     budget is independent of f32/f64 output, which is ``_sanitize_title``'s
     ``wordsize=8`` budget (10*8 - 8 = 72).
+
+    ``part_names`` entries whose ID is not a part of the d3plot (for example a
+    part whose only cells were skipped, bug report 2026-10-11 #20) give one
+    warning that lists their IDs.
     """
+    if part_names:
+        known = {int(pid) for pid in part_ids}
+        unused = [k for k in part_names if k not in known]
+        if unused:
+            # integer IDs numerically; any non-integer key (never used as a title) last
+            unused.sort(
+                key=lambda k: (
+                    (0, int(k), "") if isinstance(k, (int, np.integer)) else (1, 0, str(k))
+                )
+            )
+            ids = ", ".join(str(k) for k in unused)
+            warn_list.append(
+                f"part_names entries for part IDs not in the d3plot were ignored: {ids}"
+            )
     titles = []
     for pid in part_ids:
         pid = int(pid)

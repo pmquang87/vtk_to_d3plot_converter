@@ -28,6 +28,12 @@ Per-particle state layout (matches ``_read_states_sph``): material/deletion
 word, then radius, pressure, stress(6), eff. plastic strain, density, internal
 energy, n neighbours, strain(6), mass, history variables - each only when its
 array is present.
+
+Known limit (LS-PrePost 4.13, not lasso): a file in which two or more SPH
+particles share a material / part with solid elements crashes LS-PrePost 4.13
+while loading (exit code 0xC0000374, heap corruption). SPH particles in a part of their own load fine. So give
+SPH particles their own material index / part when the file is meant for
+LS-PrePost.
 """
 
 from __future__ import annotations
