@@ -15,7 +15,15 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import DATA, GOLDEN_W3_D3, GOLDEN_W3_VTK, GOLDEN_ZUG_D3, GOLDEN_ZUG_VTK, REPO
+from conftest import (
+    DATA,
+    GOLDEN_W3_D3,
+    GOLDEN_W3_VTK,
+    GOLDEN_ZUG_D3,
+    GOLDEN_ZUG_VTK,
+    PORT_DIR,
+    REPO,
+)
 
 pytestmark = pytest.mark.bugreport
 
@@ -119,11 +127,38 @@ def test_c08_manifest_detects_one_byte_change(tmp_path):
 
 
 def test_c08_manifest_root_option(tmp_path):
-    """Bug report 2026-10-11 #21 (c08): --root verifies a copied data tree (CRLF copy)."""
+    """Bug report 2026-10-11 #21 (c08): --root / --manifest select the tree that is verified.
+
+    The real tool (whose default root is the real tests/data) is run on a CRLF
+    copy. The copy is then made to differ from the real tree, so a tool that
+    ignored --root (or --manifest) would still print OK and fail this test.
+    """
     data = _fake_repo(tmp_path / "crlf", "crlf")
-    r = _run([TOOLS / "golden_manifest.py", "verify", "--root", data])
+    tool = TOOLS / "golden_manifest.py"
+    r = _run([tool, "verify", "--root", data])
     assert r.returncode == 0, r.stdout[-2000:]
     assert "OK: all 88 golden files match manifest" in r.stdout
+    # one byte changed in the COPY only: --root must see it
+    vtk = data / "golden" / "zug_test3_RS" / "vtk" / "zug_test3_RSA002.vtk"
+    orig = vtk.read_bytes()
+    raw = bytearray(orig)
+    raw[raw.index(b"2.00014")] = ord("3")
+    vtk.write_bytes(bytes(raw))
+    r = _run([tool, "verify", "--root", data])
+    assert r.returncode == 1, r.stdout[-2000:]
+    assert "CHANGED: golden/zug_test3_RS/vtk/zug_test3_RSA002.vtk" in r.stdout
+    assert "FAILED: 1 mismatches found." in r.stdout
+    # the real tree is untouched and still verifies without --root
+    r = _run([tool, "verify"])
+    assert r.returncode == 0, r.stdout[-2000:]
+    # --manifest: a manifest outside the tree, cut to 10 entries -> 78 NEW files
+    lines = (data / "golden" / "MANIFEST.sha256").read_text(encoding="utf-8").splitlines(True)
+    short = tmp_path / "short.sha256"
+    short.write_text("".join([ln for ln in lines if not ln.startswith("#")][:10]), "utf-8")
+    vtk.write_bytes(orig)
+    r = _run([tool, "verify", "--root", data, "--manifest", short])
+    assert r.returncode == 1, r.stdout[-2000:]
+    assert "FAILED: 78 mismatches found." in r.stdout
 
 
 def test_c39_manifest_new_file_fails(tmp_path):
@@ -241,6 +276,87 @@ def test_c22_verifiers_fail_on_count_mismatch(tmp_path, tool):
     r = _run([TOOLS / "reference" / tool, ZUG_D3, vdir])
     assert r.returncode == 2, r.stdout + r.stderr[-2000:]
     assert "ERROR: 2 VTK files but 3 d3plot states" in r.stdout
+
+
+PORT_STEM = "BOXIMP"
+_TVTK_RE = re.compile(r"^state\s+\d+ \S+\.vtk t_vtk=(\S+)", re.MULTILINE)
+
+
+def _port_d3plot(tmp_path: Path) -> Path:
+    out = tmp_path / "box.d3plot"
+    _convert_cli(PORT_DIR, out)
+    return out
+
+
+def _port_title_times() -> list[float]:
+    times = []
+    for i in range(21):
+        title = (PORT_DIR / f"{PORT_STEM}A{i:03d}.vtk").read_text().splitlines()[1]
+        times.append(float(title.split("t=")[1]))
+    return times
+
+
+def test_c22_verify_byid_port_title_time(tmp_path):
+    """Bug report 2026-10-11 #24 (c22): port files (time only in the title) are time-checked."""
+    out = _port_d3plot(tmp_path)
+    r = _run([TOOLS / "reference" / "verify_byid.py", out, PORT_DIR])
+    assert r.returncode == 0, r.stdout + r.stderr[-2000:]
+    assert [float(v) for v in _TVTK_RE.findall(r.stdout)] == _port_title_times()
+    assert "not time-checked" not in r.stdout
+    # A001 <-> A003 swapped: the title times now disagree with the d3plot states.
+    vdir = _renamed_copy(PORT_DIR, PORT_STEM, {i: i for i in range(21)}, tmp_path / "sw")
+    a1, a3 = vdir / f"{PORT_STEM}A1.vtk", vdir / f"{PORT_STEM}A3.vtk"
+    b1, b3 = a1.read_bytes(), a3.read_bytes()
+    a1.write_bytes(b3)
+    a3.write_bytes(b1)
+    r = _run([TOOLS / "reference" / "verify_byid.py", out, vdir])
+    assert r.returncode == 2, r.stdout + r.stderr[-2000:]
+    assert r.stdout.count("ERROR: time mismatch") == 2
+    assert "ERROR: 2 state(s) could not be paired" in r.stdout
+
+
+def test_c22_verify_byid_warns_without_time(tmp_path):
+    """Bug report 2026-10-11 #24 (c22): no TIME in the VTK -> a WARNING, not a silent skip."""
+    out = _port_d3plot(tmp_path)
+    vdir = tmp_path / "notime"
+    vdir.mkdir()
+    for i in range(21):
+        name = f"{PORT_STEM}A{i:03d}.vtk"
+        lines = (PORT_DIR / name).read_text().splitlines(True)
+        lines[1] = "pyradioss state\n"
+        (vdir / name).write_text("".join(lines))
+    r = _run([TOOLS / "reference" / "verify_byid.py", out, vdir])
+    assert r.returncode == 0, r.stdout + r.stderr[-2000:]
+    assert _TVTK_RE.findall(r.stdout) == ["None"] * 21
+    assert "WARNING: 21 state(s) have no TIME in the VTK file - pairing not time-checked" in (
+        r.stdout
+    )
+
+
+def test_c22_verify_zug_node_id_changes_between_states(tmp_path):
+    """Bug report 2026-10-11 #24 (c22): verify_zug checks the NODE_ID array of every state."""
+    vdir = _renamed_copy(GOLDEN_ZUG_VTK, "zug_test3_RS", {1: 1, 2: 2, 3: 3}, tmp_path / "vtk")
+    f = vdir / "zug_test3_RSA2.vtk"
+    lines = f.read_text().splitlines(True)
+    k = next(i for i, ln in enumerate(lines) if ln.startswith("SCALARS NODE_ID")) + 2
+    assert lines[k : k + 2] == ["10876\n", "11332\n"]
+    lines[k], lines[k + 1] = lines[k + 1], lines[k]  # two node IDs swapped in state 2 only
+    f.write_text("".join(lines))
+    r = _run([TOOLS / "reference" / "verify_zug.py", ZUG_D3, vdir])
+    assert r.returncode == 2, r.stdout + r.stderr[-2000:]
+    assert "ERROR: NODE_ID array of zug_test3_RSA2.vtk differs from zug_test3_RSA1.vtk" in (
+        r.stdout
+    )
+    assert [n for _, n, _ in _states(r.stdout)] == ["zug_test3_RSA1.vtk", "zug_test3_RSA3.vtk"]
+
+
+def test_c22_verify_zug_needs_node_ids(tmp_path):
+    """Bug report 2026-10-11 #24 (c22): verify_zug on VTK without NODE_ID exits 2 with ERROR."""
+    out = _port_d3plot(tmp_path)
+    r = _run([TOOLS / "reference" / "verify_zug.py", out, PORT_DIR])
+    assert r.returncode == 2, r.stdout + r.stderr[-2000:]
+    assert "ERROR: BOXIMPA000.vtk has no NODE_ID array" in r.stdout
+    assert "Traceback" not in r.stderr
 
 
 # ================================================================
@@ -370,3 +486,46 @@ def test_c40_non_ascii_path_lsprepost(tmp_path, monkeypatch):
     assert r["loaded"], r["detail"]
     assert r["n_states"] == 11
     assert png.stat().st_size > 5000
+
+
+@pytest.mark.skipif(os.name != "nt", reason="stub LS-PrePost is a .bat file")
+def test_c40_ansi_cfile_when_no_short_path(tmp_path, monkeypatch):
+    """Bug report 2026-10-11 #40 (c40): no 8.3 short folder -> the cfile carries the
+    'ü' in the ANSI code page (not ASCII) and the result detail warns about it."""
+    import tools.lspp_check as lc
+
+    enc = locale.getencoding()
+    try:
+        "ü".encode(enc)
+    except UnicodeEncodeError:
+        pytest.skip(f"ANSI code page {enc} cannot encode 'ü'")
+    recorded = _stub_lspp(tmp_path, monkeypatch)
+    monkeypatch.setattr(lc, "_short_path", lambda p: None)
+    d = tmp_path / "Prüfung"
+    d.mkdir()
+    d3 = d / W3_D3.name
+    shutil.copy(W3_D3, d3)
+    r = lc.check_d3plot(d3, png=d / "x.png", state=2)
+    raw = recorded.read_bytes()
+    assert f'open d3plot "{d3.resolve()}"'.encode(enc) in raw
+    assert "Prüfung".encode(enc) in raw and not raw.isascii()
+    assert r["loaded"] is True  # the stub "loaded" it; real LS-PrePost 4.13 may not
+    assert len(r["path_notes"]) == 2  # d3plot and PNG path
+    assert "LS-PrePost may fail on it" in r["detail"]
+    assert f"written in {enc}" in r["detail"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="stub LS-PrePost is a .bat file")
+def test_c40_missing_file_result_shape(tmp_path, monkeypatch):
+    """Bug report 2026-10-11 #40 (c40): the 'no such file' result has the same keys
+    (cfile, path_notes) as a normal result."""
+    from tools.lspp_check import check_d3plot
+
+    recorded = _stub_lspp(tmp_path, monkeypatch)
+    ok = check_d3plot(W3_D3)
+    missing = check_d3plot(tmp_path / "nope.d3plot")
+    assert missing["loaded"] is False
+    assert missing["cfile"] is None and missing["path_notes"] == []
+    assert missing["detail"].startswith("no such file:")
+    assert set(missing) == set(ok)
+    assert recorded.exists()  # only from the first call

@@ -13,13 +13,17 @@ was converted from):
 - Zero NODE_IDs are renumbered max+1, max+2, ... exactly as the converter does
   (``vtk2d3plot.mapping.map_topology``).
 - The number of VTK files must equal the number of d3plot states, and each
-  state time must match the VTK TIME (relative to the largest time, 1e-5,
+  state time must match the VTK time (relative to the largest time, 1e-5,
   because anim_to_vtk prints TIME with 6 significant digits). Otherwise the
-  script prints ERROR and exits with code 2.
+  script prints ERROR and exits with code 2. The VTK time is the FIELD TIME
+  value (official dialect) or, without it, ``t=<value>`` in the title line
+  (port dialect). States without any time are not time-checked; the script
+  then prints a WARNING with their count.
 
 Exit codes: 0 = compared, 2 = pairing error (count, time or node-ID mismatch).
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +31,8 @@ import numpy as np
 from lasso.dyna.d3plot import D3plot
 
 TIME_RTOL = 1.0e-5
+# Port dialect: the time is only in the title line, "pyradioss state t=%.9E".
+TITLE_TIME_RE = re.compile(r"t=([0-9.eE+\-]+)")
 
 
 def _read_tokens(lines, start, count):
@@ -40,10 +46,14 @@ def _read_tokens(lines, start, count):
 
 
 def parse_vtk(path):
-    """Independent minimal legacy-VTK parser: (n_pts, n_cells, points, raw NODE_ID, TIME)."""
+    """Independent minimal legacy-VTK parser: (n_pts, n_cells, points, raw NODE_ID, time).
+
+    time = FIELD TIME if present, else ``t=<value>`` from the title line, else None.
+    """
     with open(path, "r", errors="replace") as f:
         lines = f.readlines()
     n_pts = n_cells = pts = node_ids = tv = None
+    title_m = TITLE_TIME_RE.search(lines[1]) if len(lines) > 1 else None
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -61,7 +71,18 @@ def parse_vtk(path):
             node_ids = np.array(vals, dtype=np.int64)
             continue
         i += 1
+    if tv is None and title_m is not None:
+        tv = float(title_m.group(1))
     return n_pts, n_cells, pts, node_ids, tv
+
+
+def warn_untimed(n_untimed: int) -> None:
+    """Say loudly that some states were paired without a time check."""
+    if n_untimed:
+        print(
+            f"WARNING: {n_untimed} state(s) have no TIME in the VTK file - "
+            "pairing not time-checked (file order only)"
+        )
 
 
 def ordered_vtk_files(vtk_dir) -> list[Path]:
@@ -110,6 +131,7 @@ def main(argv=None) -> int:
 
     t_scale = max(float(np.abs(t).max()), np.finfo(float).tiny)
     errors = 0
+    n_untimed = 0
     for idx, f in enumerate(vtks):
         n_pts, n_cells, pts, vids, tv = parse_vtk(f)
         if raw0 is not None and (vids is None or not np.array_equal(vids, raw0)):
@@ -119,13 +141,16 @@ def main(argv=None) -> int:
         diff = np.abs(nd[idx][perm] - pts)
         t_d3 = float(t[idx])
         flag = ""
-        if tv is not None and abs(tv - t_d3) > TIME_RTOL * t_scale:
+        if tv is None:
+            n_untimed += 1
+        elif abs(tv - t_d3) > TIME_RTOL * t_scale:
             flag = "  ERROR: time mismatch, wrong VTK/state pairing"
             errors += 1
         print(
             f"state {idx:2d} {f.name} t_vtk={tv!s:<12} t_d3={t_d3:<20} nodes={n_pts} cells={n_cells}"
             f"  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}{flag}"
         )
+    warn_untimed(n_untimed)
     if errors:
         print(f"ERROR: {errors} state(s) could not be paired with their VTK file")
         return 2

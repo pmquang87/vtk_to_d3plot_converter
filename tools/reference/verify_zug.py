@@ -5,8 +5,10 @@ Usage:
 
 VTK files are paired with d3plot states in the converter's order (numeric
 ``A(\\d+)`` suffix, see ``verify_byid.ordered_vtk_files``); the file count and
-every state time are checked, and a pairing mismatch prints ERROR and exits
-with code 2.
+every state time are checked (FIELD TIME, else ``t=`` in the title), and a
+pairing mismatch prints ERROR and exits with code 2. The NODE_ID array must
+exist and be the same in every state (else ERROR, exit 2); states without a
+time are reported with a WARNING.
 """
 
 import sys
@@ -16,7 +18,7 @@ import numpy as np
 from lasso.dyna.d3plot import D3plot
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_byid import TIME_RTOL, ordered_vtk_files, parse_vtk
+from verify_byid import TIME_RTOL, ordered_vtk_files, parse_vtk, warn_untimed
 
 
 def main(argv=None) -> int:
@@ -33,6 +35,9 @@ def main(argv=None) -> int:
         print(f"ERROR: {len(vtks)} VTK files but {len(t)} d3plot states - cannot pair them")
         return 2
     _, _, _, vids0, _ = parse_vtk(vtks[0])
+    if vids0 is None:
+        print(f"ERROR: {vtks[0].name} has no NODE_ID array - use verify_byid.py instead")
+        return 2
     nzero = int((vids0 == 0).sum())
     print("VTK nodes with NODE_ID == 0 :", nzero, "of", vids0.size)
     print("d3plot n_nodes              :", d_ids.size)
@@ -45,18 +50,26 @@ def main(argv=None) -> int:
     perm = np.array([lut[int(v)] for v in vids0[nz]])
     t_scale = max(float(np.abs(t).max()), np.finfo(float).tiny)
     errors = 0
+    n_untimed = 0
     for idx, f in enumerate(vtks):
-        _, ncell, pts, _, tv = parse_vtk(f)
+        _, ncell, pts, vids, tv = parse_vtk(f)
+        if vids is None or not np.array_equal(vids, vids0):
+            print(f"ERROR: NODE_ID array of {f.name} differs from {vtks[0].name}")
+            errors += 1
+            continue
         diff = np.abs(nd[idx][perm] - pts[sel])
         t_d3 = float(t[idx])
         flag = ""
-        if tv is not None and abs(tv - t_d3) > TIME_RTOL * t_scale:
+        if tv is None:
+            n_untimed += 1
+        elif abs(tv - t_d3) > TIME_RTOL * t_scale:
             flag = "  ERROR: time mismatch, wrong VTK/state pairing"
             errors += 1
         print(
             f"state {idx:2d} {f.name} t_vtk={tv!s:<12} t_d3={t_d3:<20} matched={sel.size} "
             f"cells={ncell}  max|dxyz|={diff.max():.4e}  mean={diff.mean():.3e}{flag}"
         )
+    warn_untimed(n_untimed)
     if errors:
         print(f"ERROR: {errors} state(s) could not be paired with their VTK file")
         return 2

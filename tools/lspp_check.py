@@ -127,7 +127,8 @@ def check_d3plot(
     is written with or without ``fringe``, so the PNG shows that state. With
     ``fringe`` and no ``state`` the last state is shown.
 
-    Returns dict with keys: loaded (bool), n_states (int|None), exit_code,
+    Returns dict with keys (the same keys on every return): loaded (bool),
+    n_states (int|None), exit_code, wordsize (4|8|None), elapsed_s,
     msg (path of lspost.msg), cfile (path of the command file), path_notes
     (how non-ASCII paths were written), detail (str). Raises RuntimeError if
     LS-PrePost is not installed.
@@ -142,7 +143,11 @@ def check_d3plot(
             "loaded": False,
             "n_states": None,
             "exit_code": None,
+            "wordsize": None,
+            "elapsed_s": 0.0,
             "msg": None,
+            "cfile": None,
+            "path_notes": [],
             "detail": f"no such file: {d3}",
         }
 
