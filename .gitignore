@@ -21,3 +21,6 @@ tests/data/one_tet.d3plot
 tmp_test_dir/
 scratch*.py
 *_output.txt
+
+# per-machine agent lessons (see ~/.claude/MISTAKES.md table)
+PROJECT_MISTAKES.md

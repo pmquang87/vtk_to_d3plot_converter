@@ -10,6 +10,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -28,7 +29,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         required=True,
-        help="Output d3plot path (family: <name>.d3plot + <name>.d3plot01).",
+        help=(
+            "Output d3plot path. Writes a family: the geometry file <name>.d3plot "
+            "plus one state file per state <name>.d3plot01, <name>.d3plot02, ... "
+            "Keep all files together."
+        ),
     )
     ap.add_argument(
         "--f64",
@@ -47,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--rotate-shell-stress",
         action="store_true",
         default=False,
-        help="Rotate shell stress from element-local to global coordinate frame.",
+        help="Rotate shell stress and strain from the element-local to the global coordinate frame.",
     )
     ap.add_argument(
         "--title",
@@ -75,6 +80,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _default_title(inputs: list[str]) -> str:
+    """Default d3plot title: the name of the folder that holds the inputs.
+
+    A directory input is that folder; any other input (a .vtk/.vtu file, a
+    file matched by a glob pattern, a .pvd manifest, a "<folder>/<stem>" stem)
+    is held by its parent folder. When all inputs share one folder its name is
+    the title, and a folder called "vtk" gives its parent's name. Inputs from
+    several folders give no title. Paths are made absolute (lexically
+    normalised) first, so relative inputs such as "vtk", "." or ".." get the
+    same title as the same folder given absolute.
+    """
+    folders = set()
+    for inp in inputs:
+        p = Path(os.path.abspath(inp))
+        folders.add(p if p.is_dir() else p.parent)
+    if len(folders) != 1:
+        return ""
+    folder = folders.pop()
+    if folder.name.lower() == "vtk" and folder.parent.name:
+        return folder.parent.name
+    return folder.name
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``vtk2d3plot`` console script."""
     ap = _build_parser()
@@ -82,11 +110,34 @@ def main(argv: list[str] | None = None) -> None:
 
     import glob as _glob
 
-    # Windows glob expansion (PowerShell doesn't expand wildcards)
+    from .series import _sort_and_filter_files
+
+    # Windows glob expansion (PowerShell doesn't expand wildcards). The matches
+    # of each pattern come in file-system order; sort them with the same
+    # numeric state ordering a directory input gets. Patterns and explicit
+    # files keep the order the user gave.
     expanded_inputs: list[str] = []
     for inp in args.inputs:
         if "*" in inp or "?" in inp:
-            expanded_inputs.extend(_glob.glob(inp))
+            matches = [Path(m) for m in _glob.glob(inp)]
+            if not matches:
+                # Bug report 2026-10-11, suspicion S26: a pattern that matches
+                # nothing is an error even when another input matches.
+                print(f"ERROR: pattern '{inp}' matched no files", file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                ordered = _sort_and_filter_files(matches)
+            except ValueError as exc:
+                print(f"ERROR: pattern {inp!r}: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+            dropped = sorted(set(map(str, matches)) - set(map(str, ordered)))
+            if dropped and not args.quiet:
+                print(
+                    f"WARNING: pattern {inp!r}: ignored {len(dropped)} file(s) without "
+                    f"the <stem>A<number>.vtk/.vtu state name: {', '.join(dropped)}",
+                    file=sys.stderr,
+                )
+            expanded_inputs.extend(str(m) for m in ordered)
         else:
             expanded_inputs.append(inp)
     if not expanded_inputs:
@@ -145,15 +196,8 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError:
                     pass
 
-    # Default title from input directory name
-    if not args.title and len(args.inputs) == 1:
-        p = Path(args.inputs[0])
-        if p.is_dir():
-            dir_name = p.name
-            # If directory name is 'vtk', use parent directory name
-            if dir_name.lower() == "vtk" and p.parent.name:
-                dir_name = p.parent.name
-            args.title = dir_name
+    if not args.title:
+        args.title = _default_title(args.inputs)
 
     # Per-state progress callback for non-quiet mode
     progress_fn = None
@@ -182,7 +226,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.json:
         print(rep.to_json())
     elif not args.quiet:
-        print(f"Wrote {rep.output} and {rep.output}01")
+        state_files = rep.output_files[1:]
+        if len(state_files) == 1:
+            print(f"Wrote {rep.output_files[0]} + 1 state file {state_files[0]}")
+        elif state_files:
+            print(
+                f"Wrote {rep.output_files[0]} + {len(state_files)} state files "
+                f"{state_files[0]}..{state_files[-1]}"
+            )
+        else:
+            print(f"Wrote {rep.output}")
         print(
             f"  {rep.n_states} states, {rep.n_nodes} nodes, "
             f"{rep.n_solids} solids, {rep.n_shells} shells, "

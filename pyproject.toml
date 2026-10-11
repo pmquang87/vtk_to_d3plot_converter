@@ -38,6 +38,8 @@ markers = [
     "milestone11: infra, CI, golden manifest, json report",
     "milestone12: fix round M12 (S1 strain path, S2 fill warnings, T5 atomic, etc)",
     "roadmap_tier1: Tier-1 roadmap items (EROSION_STATUS, unmapped warnings, etc.)",
+    "bugreport: fixes from the 2026-10-11 external bug report (40 bugs, c01..c43)",
+    "suspicions: leads from the 2026-10-11 bug report's 'Suspicions not checked' list and the milestone-13 open points (milestone 14)",
     "lspp: needs LS-PrePost installed (auto-skipped otherwise)",
     "pyradioss: needs the pyradioss package (auto-skipped otherwise)",
     "slow: long-running",

@@ -55,8 +55,13 @@ anim_to_vtk) → LS-DYNA d3plot family (written via lasso-python).
   the lasso 2.0.4 source in `.venv\Lib\site-packages\lasso\`, or ask.
 - lasso quirks that WILL bite you (details in docs/plan.md "Global constraints"):
   node_displacement = ABSOLUTE coordinates; part_titles = bytes; solids have
-  exactly 1 or 8 integration layers; write_d3plot emits a 2-file family;
-  the array_type.py docstring for solid eps shape is wrong.
+  exactly 1 or 8 integration layers; the converter writes one file per state
+  (`write_d3plot(..., single_file=False)`: `<out>` + `<out>01..NN`, keep them
+  all together); the array_type.py docstring for solid eps shape is wrong;
+  ISTRN is one global flag and solids need eff. plastic strain whenever they
+  carry state data (builder zero-fills, see docs/plan.md).
+- The d3plot stress slot order is [xx, yy, zz, xy, yz, zx] (LS-DYNA manual;
+  an older plan.md note claiming [xy, xz, yz] was wrong).
 - Verify every writer change three ways: (1) lasso read-back, (2) golden-pair
   by-ID comparison (NEVER compare by array index — nodes are re-ordered),
   (3) LS-PrePost via `tools/lspp_check.py` (see the lspp-check skill).
