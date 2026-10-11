@@ -136,10 +136,10 @@ def _read_numeric_block(
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-# Point/cell arrays that are still READ (not skipped) in metadata_only mode.
-# Single place to extend, e.g. NODE_ID / ELEMENT_ID / PART_ID for the lazy
-# loader's identity check.
-_METADATA_KEEP = frozenset({"TIME"})
+# Point/cell arrays that are still READ (not skipped) in metadata_only mode:
+# the time, and the identity arrays the lazy loader compares between states
+# (bug report 2026-10-11 #33, c34).
+_METADATA_KEEP = frozenset({"TIME", "NODE_ID", "ELEMENT_ID", "PART_ID"})
 
 
 def _keep_in_metadata(name: str) -> bool:

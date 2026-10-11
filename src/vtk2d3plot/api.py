@@ -152,6 +152,9 @@ def convert(
         progress=progress,
         rotate_shell_stress=rotate_shell_stress,
     )
+    # Series-level warnings (PVD manifest time overrides, a T01 file without
+    # data rows, ...) come first, like the loader runs first.
+    warn_list[0:0] = series.warnings
 
     if model.n_skipped_cells > 0:
         types_str = ", ".join(str(t) for t in sorted(model.skipped_cell_types))

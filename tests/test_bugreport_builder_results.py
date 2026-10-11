@@ -396,17 +396,16 @@ def test_c13_every_gather_site_ignores_case(tmp_path, scenario, recase):
     for name, idx, value in _GATHER_PINS[scenario]:
         got = float(np.asarray(d_r.arrays[getattr(ArrayType, name)])[idx])
         assert got == pytest.approx(value, rel=1e-6), (name, idx)
-    assert not [w for w in w_r if "zero-filled" in w]
+    # A missed re-cased gather shows up as a per-state fill ("zero-filled at states
+    # [...]"). The record-layout fills of bug report #7/#8/#26 ("zero-filled at all
+    # states (no ... source array; required ...)") are legitimate here: the
+    # comparison with the canonical run below pins them.
+    assert not [w for w in w_r if "zero-filled at states" in w]
     assert [w for w in w_r if not w.startswith("unmapped arrays")] == [
         w for w in w_c if not w.startswith("unmapped arrays")
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="needs the cell-array check of the 'unmapped arrays ignored' block in "
-    "build_d3plot (owned by another cluster) to ignore case; see cross-cluster request",
-)
 def test_c13_unmapped_warning_omits_mapped_lowercase(tmp_path):
     """Bug report 2026-10-11 #5 (c13): mapped lower-case arrays are not 'unmapped arrays ignored'."""
     from vtk2d3plot.api import convert
@@ -416,6 +415,32 @@ def test_c13_unmapped_warning_omits_mapped_lowercase(tmp_path):
     rep = convert(low, tmp_path / "low.d3plot")
     unmapped = [w for w in rep.warnings if w.startswith("unmapped arrays")]
     assert unmapped == []
+
+
+def test_c13_unmapped_warning_keeps_unused_recased_arrays(tmp_path):
+    """Bug report 2026-10-11 #5 (c13): only arrays that are really used count as mapped.
+
+    A shadowed 'vonm' next to 'VONM' is ignored, and a re-cased identity array
+    ('part_id') is not read by the exact-case mapping, so both must stay listed
+    as 'unmapped arrays ignored'.
+    """
+    from vtk2d3plot.api import convert
+
+    pts, cells = _quads(2)
+    for k in range(2):
+        _write_official(
+            tmp_path / f"runA{k:03d}.vtk",
+            time_val=0.1 * (k + 1),
+            points=pts,
+            cells=cells,
+            cell_scalars={"VONM": [5.0, 7.0], "vonm": [900.0, 901.0], "part_id": [3, 3]},
+        )
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    unmapped = [w for w in rep.warnings if w.startswith("unmapped arrays")]
+    assert len(unmapped) == 1
+    assert "vonm (absmax=901)" in unmapped[0]
+    assert "part_id (absmax=3)" in unmapped[0]
+    assert "VONM" not in unmapped[0]
 
 
 def test_c13_case_collision_exact_wins(tmp_path):

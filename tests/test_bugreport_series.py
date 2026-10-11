@@ -1,7 +1,8 @@
 """Bug report 2026-10-11, cluster E: series loader (src/vtk2d3plot/series.py).
 
 Covers report numbers #12 (c36), #15 (c17), #19 (c24), #27 (c02+c25, parser side),
-#31 (c33) and #32 (c35). All inputs are written by hand into tmp_path.
+#31 (c33), #32 (c35) and #33 (c34, added at integration). All inputs are written by
+hand into tmp_path.
 """
 
 import pathlib
@@ -275,16 +276,10 @@ def test_c17_pvd_mixed_timestep_keeps_document_order(tmp_path):
         assert ser.warnings == []
 
 
-# Series-level warnings reach ConversionReport only once api.convert() forwards
-# series.warnings (api.py is outside cluster E; cross-cluster request). Strict
-# xfail: when api.py is fixed these XPASS and fail the suite, so remove the marker.
-_NEEDS_API_FORWARD = pytest.mark.xfail(
-    strict=True,
-    reason="api.convert() does not forward series.warnings yet (cross-cluster request to api.py)",
-)
+# Series-level warnings reach ConversionReport because api.convert() forwards
+# series.warnings.
 
 
-@_NEEDS_API_FORWARD
 def test_c17_pvd_override_warning_reaches_report(tmp_path):
     """Bug report 2026-10-11 #15 (c17): the manifest override is in convert().warnings."""
     from lasso.dyna import ArrayType, D3plot
@@ -409,7 +404,6 @@ def test_c02_convert_with_header_only_t01(tmp_path):
     assert d.arrays.get(ArrayType.global_total_energy) is None
 
 
-@_NEEDS_API_FORWARD
 def test_c02_header_only_t01_warning_reaches_report(tmp_path):
     """Bug report 2026-10-11 #27 (c02): 'no data rows' is in convert().warnings."""
     from vtk2d3plot.api import convert
@@ -420,8 +414,10 @@ def test_c02_header_only_t01_warning_reaches_report(tmp_path):
     rep = convert(tmp_path, tmp_path / "box.d3plot")
     assert (
         "T01 file BOXIMPT01.csv has no data rows; "
-        "global energies from it (IE, KE, EN) are not written" in rep.warnings
+        "global energies from it (internal, kinetic, total) are not written" in rep.warnings
     )
+    # the builder guard does not repeat what the loader already reported
+    assert len([w for w in rep.warnings if "no data rows" in w]) == 1
 
 
 # ── #31 (c33): NaN time ─────────────────────────────────────────────────────
@@ -521,3 +517,50 @@ def test_c35_explicit_list_keeps_caller_order(tmp_path, posix_case_glob):
         ValueError, match=r"runA001\.VTK \(time 1\.0\) is followed by file runA000\.VTK"
     ):
         load_series([b, a])
+
+
+# ── #33 (c34): the lazy loader applies the identity rule too ────────────────
+
+
+def _write_vtu_with_element_id(path, z, element_id, time_point_array):
+    """The 1-quad VTU of _write_vtu plus a CellData ELEMENT_ID array."""
+    _write_vtu(path, z=z, time_point_array=time_point_array)
+    text = path.read_text(encoding="utf-8").replace(
+        "    </Piece>",
+        "      <CellData>\n"
+        f'        <DataArray type="Int32" Name="ELEMENT_ID" format="ascii">{element_id}'
+        "</DataArray>\n"
+        "      </CellData>\n"
+        "    </Piece>",
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_c34_lazy_node_id_reorder_rejected(tmp_path):
+    """Bug report 2026-10-11 #33 (c34): state 1 has NODE_ID 4 3 2 1 instead of 1 2 3 4."""
+    _write_vtk(tmp_path / "runA000.vtk", 0.0, node_ids=[1, 2, 3, 4])
+    _write_vtk(tmp_path / "runA001.vtk", 1.0, node_ids=[4, 3, 2, 1])
+    for loader in (load_series, load_series_lazy):
+        with pytest.raises(TopologyError, match=r"point_data NODE_ID mismatch in runA001\.vtk"):
+            loader(tmp_path)
+
+
+def test_c34_lazy_presence_rule(tmp_path):
+    """Bug report 2026-10-11 #33 (c34) with #19: the report's #19 series is refused lazily too."""
+    _write_vtk(tmp_path / "runA000.vtk", 0.0)
+    _write_vtk(tmp_path / "runA001.vtk", 1.0, node_ids=[100, 101, 102, 103])
+    _write_vtk(tmp_path / "runA002.vtk", 2.0, node_ids=[150, 151, 152, 153])
+    with pytest.raises(TopologyError, match=r"NODE_ID missing in runA000\.vtk.*runA001\.vtk"):
+        load_series_lazy(tmp_path)
+
+
+def test_c34_lazy_vtu_element_id(tmp_path):
+    """Bug report 2026-10-11 #33 (c34): VTU metadata reading keeps ELEMENT_ID for the check."""
+    _write_vtu_with_element_id(tmp_path / "runA000.vtu", 0.0, 7, 0.0)
+    _write_vtu_with_element_id(tmp_path / "runA001.vtu", 0.1, 7, 1.0)
+    assert load_series_lazy(tmp_path).times.tolist() == [0.0, 1.0]  # equal IDs: accepted
+
+    _write_vtu_with_element_id(tmp_path / "runA001.vtu", 0.1, 8, 1.0)
+    with pytest.raises(TopologyError, match=r"cell_data ELEMENT_ID mismatch in runA001\.vtu"):
+        load_series_lazy(tmp_path)

@@ -217,3 +217,101 @@ def test_c07_w3_rotated_stress_is_traction_free_on_midplane(tmp_path):
         worst = max(worst, float(np.abs(np.einsum("elij,ej->eli", S, n)).max()))
     assert np.abs(st).max() > 900.0
     assert worst < 1e-5 * np.abs(st).max(), f"max|S.n| = {worst:.4g}"
+
+
+# ------------------------------------------- integration: builder warnings
+
+
+def test_c06_rotation_warnings_name_the_real_frame(tmp_path):
+    """Bug report 2026-10-11 #1 (c06), builder side: with rotation the report must
+    not claim a 'diagonal-based local frame' (the old, wrong frame) nor keep the
+    'element-local coordinates' wording; it names the OpenRadioss frame once."""
+    from vtk2d3plot import convert
+
+    rep = convert(GOLDEN_W3_VTK, tmp_path / "w3.d3plot", rotate_shell_stress=True)
+    text = "\n".join(rep.warnings)
+    assert "diagonal" not in text
+    assert "shell stress in rotated" not in text
+    assert not [w for w in rep.warnings if w.startswith("shell stress") and "element-local" in w]
+    assert "shell stress rotated from the element frame to the global frame" in rep.warnings
+    frame = [w for w in rep.warnings if "CLSKEW3" in w]
+    assert len(frame) == 1 and "N1->N2" in frame[0]
+    assert not [w for w in rep.warnings if "degenerate local frame" in w]
+
+
+def test_c06_rotation_skips_synthetic_uniaxial_stress(tmp_path):
+    """Bug report 2026-10-11 #1 (c06), builder side: the port fixture's shell stress
+    is synthetic-uniaxial [VONM, 0, 0, 0, 0, 0] with no element frame. Rotating it
+    would invent components, so it is written unchanged and the report says so."""
+    from conftest import PORT_DIR
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot import convert
+
+    rep = convert(PORT_DIR, tmp_path / "rot.d3plot", rotate_shell_stress=True)
+    convert(PORT_DIR, tmp_path / "plain.d3plot")
+    rot = D3plot(str(tmp_path / "rot.d3plot")).arrays[ArrayType.element_shell_stress]
+    plain = D3plot(str(tmp_path / "plain.d3plot")).arrays[ArrayType.element_shell_stress]
+    assert np.abs(plain[..., 0]).max() > 0.0
+    np.testing.assert_array_equal(rot, plain)
+    assert any(w.startswith("rotate_shell_stress ignored") for w in rep.warnings)
+    assert not [w for w in rep.warnings if "CLSKEW3" in w]
+
+
+def _write_two_quad_state(path, time_val):
+    """Official-dialect state: one good quad and one zero-area (collinear) quad,
+    both with 2-layer shell stress tensors (local xx = 100, yy = 50, xy = 10)."""
+    pts = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    pts += [(5, 0, 0), (6, 0, 0), (7, 0, 0), (8, 0, 0)]
+    lines = [
+        "# vtk DataFile Version 3.0",
+        "two quads",
+        "ASCII",
+        "DATASET UNSTRUCTURED_GRID",
+        "FIELD FieldData 1",
+        "TIME 1 1 double",
+        repr(float(time_val)),
+        "POINTS 8 float",
+        *[f"{x} {y} {z}" for x, y, z in pts],
+        "CELLS 2 10",
+        "4 0 1 2 3",
+        "4 4 5 6 7",
+        "CELL_TYPES 2",
+        "9",
+        "9",
+        "POINT_DATA 8",
+        "SCALARS NODE_ID int 1",
+        "LOOKUP_TABLE default",
+        "1 2 3 4 5 6 7 8",
+        "CELL_DATA 2",
+        "SCALARS ELEMENT_ID int 1",
+        "LOOKUP_TABLE default",
+        "1 2",
+        "SCALARS PART_ID int 1",
+        "LOOKUP_TABLE default",
+        "1 1",
+    ]
+    for name in ("2DELEM_Stress_(lower)", "2DELEM_Stress_(upper)"):
+        lines.append(f"TENSORS {name} float")
+        lines += ["100 10 0", "10 50 0", "0 0 0"] * 2
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_c06_rotation_warns_about_degenerate_shells(tmp_path):
+    """Bug report 2026-10-11 #1 (c06), builder side: a shell whose local frame cannot
+    be built (here a zero-area quad, r = 0) gets wrong rotated stress; the report
+    must count it instead of failing silently."""
+    from vtk2d3plot import convert
+
+    for k in range(2):
+        _write_two_quad_state(tmp_path / f"runA{k:03d}.vtk", 0.1 * (k + 1))
+    rep = convert(
+        sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot", rotate_shell_stress=True
+    )
+    bad = [w for w in rep.warnings if "degenerate local frame" in w]
+    expected = (
+        "1 shells have a degenerate local frame (zero-area or collapsed geometry) in at "
+        "least one state (first: state 0); their rotated shell stress is unreliable "
+        "(zeroed or partly lost)"
+    )
+    assert bad == [expected]

@@ -289,7 +289,7 @@ def _load_t01(paths: list[Path], warn_list: list[str]) -> T01Data | None:
     if t01.times.size == 0:
         warn_list.append(
             f"T01 file {t01_path.name} has no data rows; "
-            f"global energies from it (IE, KE, EN) are not written"
+            f"global energies from it (internal, kinetic, total) are not written"
         )
     return t01
 
@@ -452,10 +452,10 @@ def load_series_lazy(
         fname = filenames[i]
         times_list.append(_resolve_time(state.time, manifest_time(i), fname, warn_list))
         _check_topology(state0, state, fname)
-        # Identity arrays (bug report 2026-10-11 #33, c34) are not compared here
-        # yet: metadata_only reading drops NODE_ID/ELEMENT_ID/PART_ID. Once the
-        # reader keeps them in metadata mode, add
-        #     _check_identity(state0, state, filenames[0], fname)
+        # metadata_only keeps NODE_ID / ELEMENT_ID / PART_ID (vtk_reader
+        # _METADATA_KEEP), so the lazy loader applies the same identity rule as
+        # load_series (bug report 2026-10-11 #33, c34).
+        _check_identity(state0, state, filenames[0], fname)
         # State is discarded here — only metadata kept
 
     times = np.array(times_list, dtype=np.float64)

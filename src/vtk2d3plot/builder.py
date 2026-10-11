@@ -9,7 +9,11 @@ from lasso.dyna import ArrayType, D3plot
 
 from .mapping import MappedModel
 from .series import VtkSeries
-from .shell_rotation import compute_shell_local_frames, rotate_stress_to_global
+from .shell_rotation import (
+    compute_shell_local_frames,
+    degenerate_shell_frames,
+    rotate_stress_to_global,
+)
 
 
 def _find_key(d: dict, name: str) -> str | None:
@@ -74,13 +78,21 @@ def _case_collision_warnings(series: VtkSeries) -> list[str]:
 
 
 def _tensor_to_voigt(t: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
-    """Convert (n, 3, 3) symmetric tensor to (n, 6) Voigt: xx yy zz xy xz yz.
+    """Convert (n, 3, 3) symmetric tensor to (n, 6) d3plot Voigt [xx, yy, zz, xy, yz, zx].
 
-    The binary d3plot layout for stress slots 3-5 is [σxy, σxz, σyz].
-    This matches the extraction order [t[0,1], t[0,2], t[1,2]].
-    Root cause: anim_to_vtk.cpp (OpenRadioss) writes its 3×3 with yz at
-    position (0,2) and zx at (1,2), so the Voigt extraction here produces
-    the correct slot assignment.  Verified against Vortex golden d3plot.
+    The d3plot slot order is xx, yy, zz, xy, yz, zx (LS-DYNA database manual
+    Jan 2023 p. 45-46; confirmed 2026-10-11 on the Vortex golden W3 shell
+    stress: read as [xy, yz, zx] the global-frame plane stress gives
+    max|S.n| = 8.8e-5, read as [xy, xz, yz] it gives 371).
+
+    Extraction is [t00, t11, t22, t01, t02, t12]: slot 4 (yz) takes t[0,2] and
+    slot 5 (zx) takes t[1,2]. For anim_to_vtk solid tensors this reproduces
+    the Vortex golden W3 solid stress by position (all states, shear up to
+    1.69, match 5e-6); that anim_to_vtk stores yz at (0,2) is inferred from
+    the golden, not verified from anim_to_vtk.cpp (the pyradioss port writer
+    places zx at (0,2)). Shell tensors from anim_to_vtk have zero out-of-plane
+    entries, so the shell shear slots are only filled by
+    rotate_stress_to_global, which uses this same slot order.
     """
     if out is None:
         out = np.empty((t.shape[0], 6), dtype=t.dtype)
@@ -411,25 +423,68 @@ def _build_shell_results(
             else:
                 shell_stress_fill.append(i)
 
-    if shell_stress is not None and rotate_shell_stress:
+    # --rotate-shell-stress (bug report 2026-10-11 #1, #2): rotate the element-frame
+    # tensors with the OpenRadioss local frame rebuilt from each state's deformed
+    # coordinates. A synthetic-uniaxial tensor (VONM / 2DELEM_Von_Mises) has no
+    # element frame: rotating it would only invent components, so it is left alone.
+    shell_stress_is_tensor = (
+        has_shell_stress_2layer
+        or has_shell_stress_membrane
+        or has_shell_stress_upper_only
+        or has_shell_stress_lower_only
+    )
+    if shell_stress is not None and rotate_shell_stress and not shell_stress_is_tensor:
+        warn_list.append(
+            "rotate_shell_stress ignored: the shell stress is synthetic-uniaxial "
+            "(no element frame to rotate from)"
+        )
+    elif shell_stress is not None and rotate_shell_stress:
+        n_degenerate, first_degenerate = 0, None
         for i, state in enumerate(series.states):
             R = compute_shell_local_frames(state.points, model.shell_conn)
+            bad = degenerate_shell_frames(R)
+            if bad.any():
+                n_degenerate = max(n_degenerate, int(bad.sum()))
+                if first_degenerate is None:
+                    first_degenerate = i
             shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
 
-        for w_idx in range(len(warn_list)):
-            if "shell stress" in warn_list[w_idx] or "2DELEM_Stress" in warn_list[w_idx]:
-                warn_list[w_idx] = (
-                    warn_list[w_idx]
-                    .replace(
-                        "element-local coordinates (from anim_to_vtk); von Mises / principal invariants are exact, but raw component values differ from global frame",
-                        "rotated to global frame (using standard diagonal-based local frame)",
-                    )
-                    .replace(
-                        "element-local coordinates; von Mises / principal invariants are exact",
-                        "rotated to global frame",
-                    )
-                    .replace(", element-local coordinates", ", rotated to global frame")
-                )
+        # The source warning above says "element-local coordinates"; after the
+        # rotation that is no longer true, so reword exactly those phrases.
+        local_phrases = (
+            (
+                (
+                    "in element-local coordinates (from anim_to_vtk); von Mises / principal "
+                    "invariants are exact, but raw component values differ from global frame"
+                ),
+                "rotated from the element frame to the global frame",
+            ),
+            (
+                "element-local coordinates; von Mises / principal invariants are exact",
+                "rotated from the element frame to the global frame",
+            ),
+            (", element-local coordinates", ", rotated from the element frame to the global frame"),
+        )
+        for w_idx, w in enumerate(warn_list):
+            if w.startswith(("shell stress", "only 2DELEM_Stress_(")):
+                for old, new in local_phrases:
+                    w = w.replace(old, new)
+                warn_list[w_idx] = w
+        warn_list.append(
+            "shell stress rotated with the OpenRadioss local frame, rebuilt from each "
+            "state's deformed VTK coordinates (quads: CLSKEW3 symmetric frame of "
+            "r = x2+x3-x1-x4 and s = x3+x4-x1-x2; triangles: e1 along N1->N2); this assumes "
+            "QEPH/QBAT-type shells (a BT4 corotational frame differs) and the original node "
+            "order (anim_to_vtk-collapsed triangles list their nodes in ascending order); "
+            "accuracy is limited by the VTK coordinate print precision; shell strain, if "
+            "present, is not rotated"
+        )
+        if n_degenerate:
+            warn_list.append(
+                f"{n_degenerate} shells have a degenerate local frame (zero-area or collapsed "
+                f"geometry) in at least one state (first: state {first_degenerate}); their "
+                f"rotated shell stress is unreliable (zeroed or partly lost)"
+            )
 
     # ================================================================
     # === Shell internal energy (n_states, n_shells) ===
@@ -1015,9 +1070,11 @@ def build_d3plot(
     # NODE_ID is read with exact case (mapping.py); the kinematic arrays are
     # resolved per state below (mapped_point), case-insensitively.
     _RECOGNIZED_POINT = {"NODE_ID"}
+    # ELEMENT_ID / PART_ID are read with exact case (mapping.py); a re-cased
+    # identity array is not used, so it must stay reported as unmapped.
+    _RECOGNIZED_CELL_IDS = {"ELEMENT_ID", "PART_ID"}
+    # Result arrays are gathered case-insensitively (_find_key), see below.
     _RECOGNIZED_CELL = {
-        "ELEMENT_ID",
-        "PART_ID",
         "VONM",
         "EPSP",
         "OFF",
@@ -1063,6 +1120,7 @@ def build_d3plot(
         "2DELEM_Hourglass_Energy_per_unit_mass",
         "3DELEM_Hourglass_Energy_per_unit_mass",
     }
+    _KNOWN_BUT_UNSUPPORTED_LOW = {k.lower() for k in _KNOWN_BUT_UNSUPPORTED}
     unmapped_cell: dict[str, float] = {}
     unsupported: dict[str, float] = {}
     unmapped_point: dict[str, float] = {}
@@ -1074,13 +1132,18 @@ def build_d3plot(
         mapped_point = {
             get_point_key(i_state, name) for name in ("DISPLACEMENT", "VELOCITY", "ACCELERATION")
         }
+        # Bug report 2026-10-11 #5 (c13), cell side of the same rule: a result
+        # array counts as recognised under exactly the key the gathers resolve
+        # to (_find_key), so "vonm" is mapped, while a shadowed "vonm" next to
+        # "VONM" stays reported (and _case_collision_warnings names it).
+        mapped_cell = {_find_key(state.cell_data, name) for name in _RECOGNIZED_CELL}
         for k, v in state.cell_data.items():
-            if k not in _RECOGNIZED_CELL:
+            if k not in _RECOGNIZED_CELL_IDS and k not in mapped_cell:
                 try:
                     val = float(np.abs(v).max())
                 except (TypeError, ValueError):
                     val = 0.0
-                if k in _KNOWN_BUT_UNSUPPORTED:
+                if k.lower() in _KNOWN_BUT_UNSUPPORTED_LOW:
                     unsupported[k] = max(unsupported.get(k, 0.0), val)
                 else:
                     unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
@@ -1090,7 +1153,7 @@ def build_d3plot(
                     val = float(np.abs(v).max())
                 except (TypeError, ValueError):
                     val = 0.0
-                if k in _KNOWN_BUT_UNSUPPORTED:
+                if k.lower() in _KNOWN_BUT_UNSUPPORTED_LOW:
                     unsupported[k] = max(unsupported.get(k, 0.0), val)
                 else:
                     unmapped_point[k] = max(unmapped_point.get(k, 0.0), val)
@@ -1239,9 +1302,12 @@ def _t01_globals(series, ftype, warn_list: list[str]):
     if t01 is None:
         return None, None, None
     if len(t01.times) == 0:
-        warn_list.append(
-            "T01 CSV has no data rows; global energies (internal, kinetic, total) not written"
-        )
+        # load_series already names the empty file in series.warnings (which
+        # api.convert forwards); warn here only for a series built otherwise.
+        if not any("no data rows" in w for w in getattr(series, "warnings", [])):
+            warn_list.append(
+                "T01 CSV has no data rows; global energies (internal, kinetic, total) not written"
+            )
         return None, None, None
 
     def _resample(values: np.ndarray) -> np.ndarray:
