@@ -7,7 +7,8 @@ VTK files are paired with d3plot states in the converter's order (numeric
 ``A(\\d+)`` suffix, see ``verify_byid.ordered_vtk_files``); the file count and
 every state time are checked (FIELD TIME, else ``t=`` in the title), and a
 pairing mismatch prints ERROR and exits with code 2. The NODE_ID array must
-exist and be the same in every state (else ERROR, exit 2); states without a
+exist and be the same in every state (else ERROR, exit 2), and every non-zero
+VTK node ID must exist in the d3plot (else ERROR, exit 2); states without a
 time are reported with a WARNING.
 """
 
@@ -46,6 +47,10 @@ def main(argv=None) -> int:
     nz = vids0 != 0
     print("non-zero VTK ids all present in d3plot ids:", bool(np.isin(vids0[nz], d_ids).all()))
     lut = {int(v): k for k, v in enumerate(d_ids)}
+    missing = [int(v) for v in vids0[nz] if int(v) not in lut]
+    if missing:
+        print(f"ERROR: {len(missing)} non-zero VTK node IDs not in the d3plot, e.g. {missing[:5]}")
+        return 2
     sel = np.flatnonzero(nz)
     perm = np.array([lut[int(v)] for v in vids0[nz]])
     t_scale = max(float(np.abs(t).max()), np.finfo(float).tiny)

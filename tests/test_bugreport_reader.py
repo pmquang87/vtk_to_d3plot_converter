@@ -46,10 +46,12 @@ _VTU_OF_NP = {np.dtype(v): k for k, v in _NP_OF_VTU.items()}
 _COMPRESSORS = {"zlib": ("vtkZLibDataCompressor", zlib), "lzma": ("vtkLZMADataCompressor", lzma)}
 
 
-def _payload(arr: np.ndarray, compressor: str | None, header_type: str, block_size: int):
-    """Return (header_bytes, data_bytes) for one array, VTK layout."""
-    hdt = np.uint64 if header_type == "UInt64" else np.uint32
-    raw = np.ascontiguousarray(arr).astype(arr.dtype.newbyteorder("<")).tobytes()
+def _payload(
+    arr: np.ndarray, compressor: str | None, header_type: str, block_size: int, bo: str = "<"
+):
+    """Return (header_bytes, data_bytes) for one array, VTK layout, byte order ``bo``."""
+    hdt = np.dtype(np.uint64 if header_type == "UInt64" else np.uint32).newbyteorder(bo)
+    raw = np.ascontiguousarray(arr).astype(arr.dtype.newbyteorder(bo)).tobytes()
     if compressor is None:
         return np.array([len(raw)], dtype=hdt).tobytes(), raw
     mod = _COMPRESSORS[compressor][1]
@@ -69,6 +71,7 @@ def _write_vtu(
     header_type="UInt32",
     block_size=32768,
     field_data=None,
+    byte_order="LittleEndian",
 ):
     """Write a VTU file in VTK's own layout.
 
@@ -76,7 +79,9 @@ def _write_vtu(
     types, point_data {name: arr}, cell_data {name: arr}.
     fmt: "ascii" | "binary" | "appended-raw" | "appended-base64".
     field_data: {name: arr} written as dataset-level <FieldData>.
+    byte_order: "LittleEndian" | "BigEndian" for headers and binary data.
     """
+    bo = "<" if byte_order == "LittleEndian" else ">"
     appended = []  # list of bytes (raw) or str (base64) chunks
     pos = 0
 
@@ -89,7 +94,7 @@ def _write_vtu(
         if fmt == "ascii":
             body = " ".join(repr(v.item()) for v in arr.reshape(-1))
             return f'{head} format="ascii">{body}</DataArray>\n'
-        hdr, data = _payload(arr, compressor, header_type, block_size)
+        hdr, data = _payload(arr, compressor, header_type, block_size, bo)
         if compressor is None:
             enc = base64.b64encode(hdr + data).decode()
         else:
@@ -105,7 +110,10 @@ def _write_vtu(
             pos += len(enc)
         return f'{head} format="appended" offset="{off}"/>\n'
 
-    attrs = f'type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="{header_type}"'
+    attrs = (
+        f'type="UnstructuredGrid" version="1.0" byte_order="{byte_order}" '
+        f'header_type="{header_type}"'
+    )
     if compressor is not None:
         attrs += f' compressor="{_COMPRESSORS[compressor][0]}"'
     xml = [f'<?xml version="1.0"?>\n<VTKFile {attrs}>\n<UnstructuredGrid>\n']
@@ -300,6 +308,93 @@ def test_c03_lz4_without_module_raises(tmp_path):
     p = _write_vtu(tmp_path / "h.vtu", [_hex_piece()], fmt="binary", compressor="zlib")
     p.write_bytes(p.read_bytes().replace(b"vtkZLibDataCompressor", b"vtkLZ4DataCompressor"))
     with pytest.raises(ValueError, match="lz4"):
+        read_vtk(p)
+
+
+def _mixed_type_piece():
+    """Hex piece with 1-, 4- and 8-byte arrays (byte order matters for all but UInt8)."""
+    return _hex_piece(
+        shift=0.125,
+        pd={
+            "Temperature": np.arange(8, dtype=np.float64) * 10.0 + 1.5,
+            "Weight": (np.arange(8, dtype=np.float32) - 3.25) * 0.5,
+            "NODE_ID": np.arange(8, dtype=np.int32) * 1000 + 70001,
+        },
+        cd={"VONM": np.array([123.25]), "ELEMENT_ID": np.array([4242], dtype=np.int32)},
+    )
+
+
+@pytest.mark.parametrize(
+    ("fmt", "compressor", "header_type"),
+    [
+        ("binary", None, "UInt32"),
+        ("appended-raw", None, "UInt32"),
+        ("appended-raw", None, "UInt64"),
+        ("binary", "zlib", "UInt32"),
+        ("appended-raw", "zlib", "UInt64"),
+        ("appended-base64", "zlib", "UInt32"),
+    ],
+)
+def test_c03_vtu_big_endian_matches_little_endian(tmp_path, fmt, compressor, header_type):
+    """Bug report 2026-10-11 #13 (c03): byte_order="BigEndian" VTU (headers AND data)
+    reads exactly like the same mesh written LittleEndian."""
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    piece = _mixed_type_piece()
+    kw = {
+        "fmt": fmt,
+        "compressor": compressor,
+        "header_type": header_type,
+        "block_size": 40,
+        "field_data": {"TimeValue": np.array([0.375])},
+    }
+    le = _write_vtu(tmp_path / "le.vtu", [piece], byte_order="LittleEndian", **kw)
+    be = _write_vtu(tmp_path / "be.vtu", [piece], byte_order="BigEndian", **kw)
+    # the two files really differ beyond the byte_order attribute
+    assert le.read_bytes() != be.read_bytes().replace(b"BigEndian", b"LittleEndian")
+    for meta in (False, True):
+        a, b = read_vtk(le, metadata_only=meta), read_vtk(be, metadata_only=meta)
+        assert b.time == a.time == 0.375
+        assert b.points.shape == a.points.shape == (8, 3)
+        assert b.cell_types.tolist() == a.cell_types.tolist() == [12]
+        assert b.cell_connectivity.tolist() == a.cell_connectivity.tolist() == list(range(8))
+        assert b.cell_offsets.tolist() == a.cell_offsets.tolist() == [0, 8]
+        # metadata_only decodes only the identity arrays (and the time)
+        keep = {"NODE_ID", "ELEMENT_ID"} if meta else None
+        pdata = {k: v for k, v in piece["point_data"].items() if keep is None or k in keep}
+        cdata = {k: v for k, v in piece["cell_data"].items() if keep is None or k in keep}
+        assert set(b.point_data) == set(a.point_data) == set(pdata)
+        assert set(b.cell_data) == set(a.cell_data) == set(cdata)
+        for got_a, got_b, ref in (
+            *((a.point_data[k], b.point_data[k], v) for k, v in pdata.items()),
+            *((a.cell_data[k], b.cell_data[k], v) for k, v in cdata.items()),
+        ):
+            assert got_b.dtype == got_a.dtype == ref.dtype
+            np.testing.assert_array_equal(got_b, ref)
+            np.testing.assert_array_equal(got_a, ref)
+        if not meta:
+            np.testing.assert_array_equal(b.points, piece["points"])
+            np.testing.assert_array_equal(a.points, piece["points"])
+
+
+@pytest.mark.parametrize("fmt", ["binary", "appended-raw", "appended-base64"])
+def test_c03_compressed_wrong_last_block_size_raises(tmp_path, monkeypatch, fmt):
+    """Bug report 2026-10-11 #13 (c03): a compression header whose last-block size
+    disagrees with the decompressed block is a corrupt file -> ValueError."""
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    good_payload = _payload
+
+    def wrong_last_size(arr, compressor, header_type, block_size, bo="<"):
+        hdr, data = good_payload(arr, compressor, header_type, block_size, bo)
+        hdt = np.dtype(np.uint64 if header_type == "UInt64" else np.uint32).newbyteorder(bo)
+        h = np.frombuffer(hdr, dtype=hdt).copy()
+        h[2] = (h[2] or block_size) - 1  # last block one byte shorter than it is
+        return h.tobytes(), data
+
+    monkeypatch.setitem(globals(), "_payload", wrong_last_size)
+    p = _write_vtu(tmp_path / "h.vtu", [_hex_piece()], fmt=fmt, compressor="zlib", block_size=40)
+    with pytest.raises(ValueError, match=r"Decompressed block \d+ of DataArray '\w+' has"):
         read_vtk(p)
 
 

@@ -287,6 +287,42 @@ def test_c37_convert_part_table_readback(tmp_path):
     assert d.arrays[ArrayType.part_titles_ids].tolist() == [3]
 
 
+def test_c37_unused_part_names_warn(tmp_path):
+    """Bug report 2026-10-11 #20 (c37): part_names entries for parts that are not
+    in the d3plot (here part 7, whose only cell is a skipped VTK_VERTEX) are
+    reported in one warning instead of being ignored silently."""
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot import convert
+
+    vdir = tmp_path / "vtk"
+    vdir.mkdir()
+    for i in range(2):
+        _write_vtk(
+            vdir / f"runA00{i}.vtk",
+            _QUAD_VERTEX_PTS,
+            [[4], [0, 1, 2, 3]],
+            [1, 9],
+            time=float(i),
+            part_ids=[7, 3],
+        )
+    out = tmp_path / "q.d3plot"
+    rep = convert(vdir, out, part_names={3: "A", 7: "B"})
+    msg = "part_names entries for part IDs not in the d3plot were ignored: 7"
+    assert [w for w in rep.warnings if "part_names entries" in w] == [msg]
+    d = D3plot(str(out))
+    assert d.arrays[ArrayType.part_ids].tolist() == [3]
+    titles = [t.decode("utf-8").strip("\x00").strip() for t in d.arrays[ArrayType.part_titles]]
+    assert titles == ["A"]
+    # several unused IDs: sorted numerically (7 before 12)
+    rep = convert(vdir, out, part_names={12: "C", 3: "A", 7: "B"})
+    msg = "part_names entries for part IDs not in the d3plot were ignored: 7, 12"
+    assert [w for w in rep.warnings if "part_names entries" in w] == [msg]
+    # all names used -> no such warning
+    rep = convert(vdir, out, part_names={3: "A"})
+    assert not [w for w in rep.warnings if "part_names entries" in w]
+
+
 # ---------------------------------------------------------------------------
 # #39 (c38): lasso SPH patch injects zero SPH flags
 # ---------------------------------------------------------------------------
@@ -354,7 +390,11 @@ def test_c38_sph_density_roundtrip(tmp_path, n_particles):
 def test_c38_sph_all_state_arrays_roundtrip(tmp_path):
     """Bug report 2026-10-11 #39 (c38): every SPH state array lasso can write
     (deletion, radius, pressure, stress, eps, density, internal energy,
-    neighbours, strain, mass) round-trips exactly for 3 particles."""
+    neighbours, strain, mass) round-trips exactly for 3 particles.
+
+    The geometry arrays after the SPH flag block (node IDs, SPH node / material
+    list) are checked too: with a wrong isphfg(1) the reader skips the wrong
+    number of geometry words, while the state arrays can still read back."""
     from lasso.dyna import ArrayType, D3plot
 
     d3 = _sph_d3plot(3, extra=True)
@@ -363,6 +403,12 @@ def test_c38_sph_all_state_arrays_roundtrip(tmp_path):
     r = D3plot(str(out))
     assert r.header.n_sph_nodes == 3
     assert r.arrays[ArrayType.global_timesteps].tolist() == [0.0, 0.5]
+    assert r.arrays[ArrayType.node_ids].tolist() == [11, 12, 13, 14]
+    assert r.arrays[ArrayType.sph_node_indexes].tolist() == [1, 2, 3]
+    assert r.arrays[ArrayType.sph_node_material_index].tolist() == [0, 0, 0]
+    assert np.array_equal(
+        r.arrays[ArrayType.node_coordinates], d3.arrays[ArrayType.node_coordinates]
+    )
     for at in (
         ArrayType.sph_radius,
         ArrayType.sph_pressure,

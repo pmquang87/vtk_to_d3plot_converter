@@ -132,9 +132,10 @@ def test_atomic_case_insensitive_cleanup(tmp_path):
     stale = tmp_path / "BOX.d3plot99"
     stale.write_text("stale")
     convert(PORT_DIR, out)
-    # On Windows, BOX.d3plot99 should be cleaned because the name matches
-    # case-insensitively. On Linux this test is still valid (it just won't match,
-    # but the test asserts the regex has IGNORECASE which is correct behavior).
+    # On Windows, BOX.d3plot99 should be cleaned because the family match uses
+    # os.path.normcase, which lower-cases there. On Linux normcase is the
+    # identity, so the match is case-sensitive, the stale file is kept, and the
+    # test asserts nothing (case-sensitive file system, so this is correct).
     import sys
 
     if sys.platform == "win32":

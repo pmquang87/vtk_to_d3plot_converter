@@ -350,6 +350,41 @@ def test_c22_verify_zug_node_id_changes_between_states(tmp_path):
     assert [n for _, n, _ in _states(r.stdout)] == ["zug_test3_RSA1.vtk", "zug_test3_RSA3.vtk"]
 
 
+def test_c21_verify_byid_node_id_changes_between_states(tmp_path):
+    """Bug report 2026-10-11 #23 (c21): verify_byid checks the NODE_ID array of every state."""
+    vdir = _renamed_copy(GOLDEN_ZUG_VTK, "zug_test3_RS", {1: 1, 2: 2, 3: 3}, tmp_path / "vtk")
+    f = vdir / "zug_test3_RSA2.vtk"
+    lines = f.read_text().splitlines(True)
+    k = next(i for i, ln in enumerate(lines) if ln.startswith("SCALARS NODE_ID")) + 2
+    assert lines[k : k + 2] == ["10876\n", "11332\n"]
+    lines[k], lines[k + 1] = lines[k + 1], lines[k]  # two node IDs swapped in state 2 only
+    f.write_text("".join(lines))
+    r = _run([TOOLS / "reference" / "verify_byid.py", ZUG_D3, vdir])
+    assert r.returncode == 2, r.stdout + r.stderr[-2000:]
+    assert "ERROR: NODE_ID array of zug_test3_RSA2.vtk differs from zug_test3_RSA1.vtk" in (
+        r.stdout
+    )
+    assert "ERROR: 1 state(s) could not be paired" in r.stdout
+    assert [n for _, n, _ in _states(r.stdout)] == ["zug_test3_RSA1.vtk", "zug_test3_RSA3.vtk"]
+
+
+def test_c22_verify_zug_vtk_id_missing_in_d3plot(tmp_path):
+    """Bug report 2026-10-11 #24 (c22): a non-zero VTK NODE_ID that the d3plot lacks
+    gives an ERROR line and exit 2 (as in verify_byid), not a KeyError traceback."""
+    vdir = _renamed_copy(GOLDEN_ZUG_VTK, "zug_test3_RS", {1: 1, 2: 2, 3: 3}, tmp_path / "vtk")
+    for f in sorted(vdir.glob("*.vtk")):  # the same change in every state
+        lines = f.read_text().splitlines(True)
+        k = next(i for i, ln in enumerate(lines) if ln.startswith("SCALARS NODE_ID")) + 2
+        assert lines[k] == "10876\n"
+        lines[k] = "999999\n"
+        f.write_text("".join(lines))
+    r = _run([TOOLS / "reference" / "verify_zug.py", ZUG_D3, vdir])
+    assert r.returncode == 2, r.stdout + r.stderr[-2000:]
+    assert "ERROR: 1 non-zero VTK node IDs not in the d3plot, e.g. [999999]" in r.stdout
+    assert "Traceback" not in r.stderr
+    assert _states(r.stdout) == []
+
+
 def test_c22_verify_zug_needs_node_ids(tmp_path):
     """Bug report 2026-10-11 #24 (c22): verify_zug on VTK without NODE_ID exits 2 with ERROR."""
     out = _port_d3plot(tmp_path)
