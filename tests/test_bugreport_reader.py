@@ -633,6 +633,123 @@ def test_c30_unknown_type_raises(tmp_path):
         read_vtk(p)
 
 
+# Every type name vtkDataWriter emits for legacy files (VTK 9: vtkDataWriter::
+# WriteArray), with the numpy kind the reader returns and a value that only the
+# right width can hold (2**40 needs 64 bits).
+_LEGACY_TYPE_CASES = {
+    "bit": ("i", [1, 0, 1, 1]),
+    "unsigned_char": ("i", [1, 2, 3, 255]),
+    "char": ("i", [1, 2, 3, -4]),
+    "signed_char": ("i", [1, 2, 3, -4]),
+    "unsigned_short": ("i", [1, 2, 3, 65535]),
+    "short": ("i", [1, 2, 3, -4]),
+    "unsigned_int": ("i", [1, 2, 3, 4294967295]),
+    "int": ("i", [1, 2, 3, -4]),
+    "unsigned_long": ("i", [1, 2, 3, 2**40]),
+    "long": ("i", [1, 2, 3, -(2**40)]),
+    "vtktypeint64": ("i", [1, 2, 3, -(2**40)]),
+    "vtktypeuint64": ("i", [1, 2, 3, 2**40]),
+    "vtkIdType": ("i", [1, 2, 3, 2**40]),
+    "float": ("f", [1.5, 2.0, 3.0, -4.25]),
+    "double": ("f", [1.5, 2.0, 3.0, -4.25]),
+}
+
+
+@pytest.mark.parametrize("section", ["SCALARS", "FIELD"])
+@pytest.mark.parametrize("vtype", list(_LEGACY_TYPE_CASES))
+def test_c30_legacy_vtkdatawriter_type_names(tmp_path, vtype, section):
+    """Bug report 2026-10-11 #18 (c30): the legacy type audit accepts every vtkDataWriter type name.
+
+    signed_char, vtktypeint64 and vtktypeuint64 (VTK_LONG_LONG / VTK_UNSIGNED_LONG_LONG,
+    what numpy int64 becomes on Windows) were rejected by the first audit table.
+    """
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    kind, vals = _LEGACY_TYPE_CASES[vtype]
+    body = " ".join(str(v) for v in vals)
+    if section == "SCALARS":
+        block = f"SCALARS A {vtype} 1\nLOOKUP_TABLE default\n{body}\n"
+    else:
+        block = f"FIELD FieldData 1\nA 1 4 {vtype}\n{body}\n"
+    p = tmp_path / "a.vtk"
+    p.write_text(_LEGACY.format(title="x", field="") + "POINT_DATA 4\n" + block)
+    s = read_vtk(p)
+    assert s.point_data["A"].dtype.kind == kind
+    assert s.point_data["A"].tolist() == vals
+    # lazy path skips the array but must stay in sync and accept the type name
+    m = read_vtk(p, metadata_only=True)
+    assert m.point_data == {} and m.cell_connectivity.tolist() == [0, 1, 2, 3]
+
+
+_TENSOR = np.array([[1.0, 4.0, 6.0], [4.0, 2.0, 5.0], [6.0, 5.0, 3.0]])
+
+
+@pytest.mark.parametrize(
+    ("fmt", "compressor"),
+    [("ascii", None)]
+    + [(f, c) for f in ("binary", "appended-raw", "appended-base64") for c in (None, "zlib")],
+)
+def test_c03_vtu_9component_tensor_is_3x3(tmp_path, fmt, compressor):
+    """Bug report 2026-10-11 #13 (c03) follow-up: a 9-component VTU array (3DELEM_Stress) is (n, 3, 3).
+
+    The VtkState contract and the legacy TENSORS path use (n, 3, 3); (n, 9) made
+    convert() fail with 'too many indices for array'.
+    """
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    t = np.stack([_TENSOR, _TENSOR * 10.0])  # 2 cells
+    piece = _hex_piece(cd={"3DELEM_Stress": t.reshape(2, 9)})
+    piece["conn"] = np.array([0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int64)
+    piece["offsets"] = np.array([8, 16], dtype=np.int64)
+    piece["types"] = np.array([12, 12], dtype=np.uint8)
+    piece["point_data"] = {"VEC9": np.arange(72.0).reshape(8, 9)}
+    p = _write_vtu(tmp_path / "t.vtu", [piece], fmt=fmt, compressor=compressor)
+    s = read_vtk(p)
+    assert s.cell_data["3DELEM_Stress"].shape == (2, 3, 3)
+    np.testing.assert_array_equal(s.cell_data["3DELEM_Stress"], t)
+    np.testing.assert_array_equal(s.point_data["VEC9"], np.arange(72.0).reshape(8, 3, 3))
+    ref = _oracle(p, fmt)
+    if ref is not None:
+        np.testing.assert_array_equal(ref.cell_data["3DELEM_Stress"][0].reshape(2, 3, 3), t)
+
+
+def test_c03_vtu_9component_tensor_converts(tmp_path):
+    """Bug report 2026-10-11 #13 (c03) follow-up: VTU 3DELEM_Stress reaches element_solid_stress."""
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot.api import convert
+
+    files = [
+        _write_vtu(
+            tmp_path / f"runA{k:03d}.vtu",
+            [_hex_piece(cd={"3DELEM_Stress": (_TENSOR * (k + 1)).reshape(1, 9)})],
+            fmt="binary",
+            compressor="zlib",
+            field_data={"TimeValue": np.array([0.5 * k])},
+        )
+        for k in range(2)
+    ]
+    convert(files, tmp_path / "o.d3plot")
+    d = D3plot(str(tmp_path / "o.d3plot"))
+    s = d.arrays[ArrayType.element_solid_stress]  # (n_states, n_solids, 1, 6)
+    # Voigt [xx, yy, zz, xy, xz, yz] = [t00, t11, t22, t01, t02, t12]
+    np.testing.assert_allclose(s[0, 0, 0], [1, 2, 3, 4, 6, 5])
+    np.testing.assert_allclose(s[1, 0, 0], [2, 4, 6, 8, 12, 10])
+
+
+def test_c32_field_9component_is_3x3(tmp_path):
+    """Bug report 2026-10-11 #17 (c32) follow-up: a 9-component FIELD array in CELL_DATA is (n, 3, 3)."""
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    body = " ".join(str(v) for v in _TENSOR.reshape(-1))
+    block = f"CELL_DATA 1\nFIELD FieldData 1\n3DELEM_Stress 9 1 double\n{body}\n"
+    p = tmp_path / "a.vtk"
+    p.write_text(_LEGACY.format(title="x", field="") + block)
+    s = read_vtk(p)
+    assert s.cell_data["3DELEM_Stress"].shape == (1, 3, 3)
+    np.testing.assert_array_equal(s.cell_data["3DELEM_Stress"][0], _TENSOR)
+
+
 # ---------------------------------------------------------------------------
 # #29 (c18) title time regex
 # ---------------------------------------------------------------------------
@@ -723,6 +840,17 @@ def test_c31_empty_title(tmp_path, meta):
     assert s.points.shape == (4, 3)
     if not meta:
         np.testing.assert_array_equal(s.points[2], [1, 1, 0])
+
+
+@pytest.mark.parametrize("meta", [False, True])
+def test_c31_truncated_after_title(tmp_path, meta):
+    """Bug report 2026-10-11 #30 (c31) follow-up: a file that ends after the title says it is truncated."""
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    p = tmp_path / "a.vtk"
+    p.write_text("# vtk DataFile Version 3.0\nsome title\n")
+    with pytest.raises(ValueError, match="Truncated VTK file"):
+        read_vtk(p, metadata_only=meta)
 
 
 # ---------------------------------------------------------------------------

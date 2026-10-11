@@ -164,10 +164,13 @@ def _title_time(title: str) -> float | None:
         return None
 
 
-# Legacy VTK data type names -> numpy dtype. Unknown names raise.
+# Legacy VTK data type names -> numpy dtype. Unknown names raise. The keys are
+# every name vtkDataWriter writes (lower-cased); unsigned 64-bit types share
+# int64 with unsigned_long (a value above 2**63-1 raises "Malformed numeric value").
 _LEGACY_DTYPES = {
     "bit": np.int32,
     "char": np.int32,
+    "signed_char": np.int32,
     "unsigned_char": np.int32,
     "short": np.int32,
     "unsigned_short": np.int32,
@@ -175,10 +178,23 @@ _LEGACY_DTYPES = {
     "unsigned_int": np.int64,
     "long": np.int64,
     "unsigned_long": np.int64,
+    "vtktypeint64": np.int64,
+    "vtktypeuint64": np.int64,
     "vtkidtype": np.int64,
     "float": np.float64,
     "double": np.float64,
 }
+
+
+def _as_tensor_if_9(arr: np.ndarray) -> np.ndarray:
+    """A 9-component (n, 9) array is a row-major 3x3 tensor: return it as (n, 3, 3).
+
+    VTU and legacy FIELD arrays carry tensors as 9 flat components; the
+    VtkState contract (and the legacy TENSORS path) stores them as (n, 3, 3).
+    """
+    if arr.ndim == 2 and arr.shape[1] == 9:
+        return arr.reshape((arr.shape[0], 3, 3))
+    return arr
 
 
 def _legacy_dtype(val_type: str, path: str):
@@ -370,7 +386,8 @@ def _vtu_read_xml(path: str, mm):
     idx = mm.find(b"<AppendedData")
     try:
         if idx == -1:
-            return ET.fromstring(mm[:]), -1, -1, None
+            # Parse from the file (streamed) instead of copying the whole map.
+            return ET.parse(path).getroot(), -1, -1, None
         tag_end = mm.find(b">", idx)
         if tag_end == -1:
             raise ValueError(f"Malformed AppendedData tag in file '{path}'")
@@ -473,14 +490,14 @@ def _read_vtu_tree(path: str, root, dec: _VtuDecoder, metadata_only: bool) -> Vt
         for da in piece.findall("PointData/DataArray"):
             name = da.attrib.get("Name", "")
             if name and (not metadata_only or _keep_in_metadata(name)):
-                point_data[name] = dec.decode(da)
+                point_data[name] = _as_tensor_if_9(dec.decode(da))
         pd_list.append(point_data)
 
         cell_data: dict[str, np.ndarray] = {}
         for da in piece.findall("CellData/DataArray"):
             name = da.attrib.get("Name", "")
             if name and (not metadata_only or _keep_in_metadata(name)):
-                cell_data[name] = dec.decode(da)
+                cell_data[name] = _as_tensor_if_9(dec.decode(da))
         cd_list.append(cell_data)
 
         n_points_total += n_points
@@ -559,7 +576,9 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
 
         # Line 3: ASCII
         line3 = next(lines, None)
-        if line3 is None or not line3.upper().startswith("ASCII"):
+        if line3 is None:
+            raise ValueError(f"Truncated VTK file '{path}': missing format line after the title")
+        if not line3.upper().startswith("ASCII"):
             raise ValueError(f"Expected ASCII format, got: {line3}")
 
         # Line 4: DATASET UNSTRUCTURED_GRID
@@ -624,7 +643,7 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                         )
                         if name.upper() == "TIME" and num_vals > 0:
                             field_time = float(arr[0])
-                        current_data_dict[name] = (
+                        current_data_dict[name] = _as_tensor_if_9(
                             arr.reshape((ntuples, ncomp)) if ncomp > 1 else arr
                         )
             elif cmd == "POINTS":
