@@ -72,6 +72,10 @@ class T01Data:
     # Malformed data rows that were skipped (1-based file line numbers), e.g. a
     # last row cut off by a run that crashed while writing.
     skipped_lines: list[int] = field(default_factory=list)
+    # Rows dropped because a later row has an equal or earlier TIME (a solver
+    # restart rewrites the history from its restart time; a duplicate row is
+    # replaced by the later one), so ``times`` is strictly increasing.
+    superseded_rows: int = 0
 
 
 @dataclass
@@ -109,9 +113,15 @@ def parse_t01_csv(path: Path) -> T01Data:
     A file without data rows (only its comment and header lines, e.g. from a run
     that stopped before its first time-history output) returns empty ``times``
     and ``columns == {}``, so no global variable is resampled from it. A data
-    row with the wrong number of fields or a non-numeric value (e.g. a last row
-    cut off by a crash) is skipped and its line number recorded in
-    ``skipped_lines``; the T01 file is optional, so it never aborts a conversion.
+    row with the wrong number of fields, a non-numeric value or a non-finite
+    TIME (e.g. a last row cut off by a crash) is skipped and its line number
+    recorded in ``skipped_lines``; malformed rows never abort a conversion.
+
+    The returned ``times`` are strictly increasing (they are interpolated at
+    the state times). A row whose TIME is not after the previous kept row
+    supersedes every kept row at or after its TIME: a solver restart rewrites
+    the history from the restart time on, and of duplicate rows the last one
+    wins. The number of dropped rows is ``superseded_rows``.
     """
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -121,9 +131,13 @@ def parse_t01_csv(path: Path) -> T01Data:
 
     header_line = lines[1].strip()
     headers = [h.strip() for h in header_line.split(",")]
+    if "TIME" not in headers:
+        raise ValueError("TIME column missing from T01 CSV")
+    time_idx = headers.index("TIME")
 
-    data = []
+    data: list[list[float]] = []
     skipped: list[int] = []
+    superseded = 0
     for line_no, line in enumerate(lines[2:], start=3):
         line = line.strip()
         if not line:
@@ -132,26 +146,31 @@ def parse_t01_csv(path: Path) -> T01Data:
         try:
             if len(fields) != len(headers):
                 raise ValueError
-            data.append([float(x) for x in fields])
+            row = [float(x) for x in fields]
+            if not math.isfinite(row[time_idx]):
+                raise ValueError
         except ValueError:
             skipped.append(line_no)
-
-    if "TIME" not in headers:
-        raise ValueError("TIME column missing from T01 CSV")
+            continue
+        # Restart semantics: the later rows supersede kept rows at or after this time.
+        while data and data[-1][time_idx] >= row[time_idx]:
+            data.pop()
+            superseded += 1
+        data.append(row)
 
     if not data:
-        return T01Data(times=np.array([]), columns={}, skipped_lines=skipped)
-    data = np.array(data)
-
-    time_idx = headers.index("TIME")
-    times = data[:, time_idx]
+        return T01Data(
+            times=np.array([]), columns={}, skipped_lines=skipped, superseded_rows=superseded
+        )
+    arr = np.array(data)
+    times = arr[:, time_idx]
 
     columns = {}
     for i, h in enumerate(headers):
         if h != "TIME":
-            columns[h] = data[:, i]
+            columns[h] = arr[:, i]
 
-    return T01Data(times=times, columns=columns, skipped_lines=skipped)
+    return T01Data(times=times, columns=columns, skipped_lines=skipped, superseded_rows=superseded)
 
 
 # ── shared helpers for load_series / load_series_lazy ───────────────────────
@@ -162,13 +181,32 @@ def _list_vtk_files(folder: Path) -> list[Path]:
     return [f for f in folder.iterdir() if f.suffix.lower() in _VTK_SUFFIXES and f.is_file()]
 
 
+def _ignored_files_warning(files: list[Path], kept: list[Path]) -> str | None:
+    """Report the .vtk/.vtu files of the input folder that are not series states.
+
+    The folder path is left out on purpose: the user gave it, and api.convert
+    classifies warnings by substrings that a folder name could contain.
+    """
+    kept_set = set(kept)
+    ignored = sorted((f.name for f in files if f not in kept_set), key=_natural_key)
+    if not ignored:
+        return None
+    shown = ", ".join(ignored[:10]) + (", ..." if len(ignored) > 10 else "")
+    return (
+        f"Ignored {len(ignored)} file(s) in the input folder without the "
+        f"<stem>A<number>.vtk/.vtu state name: {shown}"
+    )
+
+
 def _resolve_inputs(
     inputs: str | Path | Sequence[str | Path],
+    warn_list: list[str],
 ) -> tuple[list[Path], list[float | None] | None]:
     """Turn the user's input into an ordered file list.
 
     Returns ``(paths, manifest_times)``; ``manifest_times`` is the per-file
-    PVD timestep list for ``.pvd`` input and ``None`` otherwise.
+    PVD timestep list for ``.pvd`` input and ``None`` otherwise. Notices
+    (files of a series folder that are ignored) go to *warn_list*.
     """
     manifest_times: list[float | None] | None = None
     if isinstance(inputs, (str, Path)):
@@ -178,7 +216,11 @@ def _resolve_inputs(
             paths = [e[1] for e in pvd_entries]
             manifest_times = [e[0] for e in pvd_entries]
         elif path.is_dir():
-            paths = _sort_and_filter_files(_list_vtk_files(path))
+            files = _list_vtk_files(path)
+            paths = _sort_and_filter_files(files)
+            notice = _ignored_files_warning(files, paths)
+            if notice:
+                warn_list.append(notice)
         elif path.suffix.lower() in _VTK_SUFFIXES:
             paths = [path]
         else:
@@ -234,22 +276,42 @@ def _resolve_time(
     return manifest_time
 
 
-def _check_times(times: np.ndarray, filenames: list[str]) -> None:
-    diffs = np.diff(times)
-    # ~(d > 0) also catches NaN differences, which (d <= 0) misses
-    bad = np.flatnonzero(~(diffs > 0))
-    if bad.size:
-        idx = int(bad[0])
-        raise ValueError(
-            f"Times are not strictly increasing (non-monotonic order): file {filenames[idx]} (time {times[idx]}) "
-            f"is followed by file {filenames[idx + 1]} (time {times[idx + 1]}). "
-            f"Decreasing or duplicate time."
-        )
-    # A lone NaN (single state) or a +inf last time passes the difference test.
-    nonfinite = np.flatnonzero(~np.isfinite(times))
-    if nonfinite.size:
-        idx = int(nonfinite[0])
-        raise ValueError(f"Time is not finite: file {filenames[idx]} (time {times[idx]})")
+def _check_state(
+    i: int,
+    state: VtkState,
+    state0: VtkState,
+    manifest_time: float | None,
+    filenames: list[str],
+    times_list: list[float],
+    warn_list: list[str],
+) -> float:
+    """All checks of file *i*, in the order both loaders share (open point (e)).
+
+    1. time present, 2. time after the previous file's time, 3. time finite,
+    4. topology vs state 0, 5. identity arrays vs state 0. The loaders call this
+    per file in file order right after reading it, so both report the first
+    problem in file order with the same exception. Appends the time to
+    *times_list* and returns it.
+    """
+    fname = filenames[i]
+    t = float(_resolve_time(getattr(state, "time", None), manifest_time, fname, warn_list))
+    if i > 0:
+        prev = times_list[-1]
+        # not (t > prev) also catches NaN, which (t <= prev) misses
+        if not t > prev:
+            raise ValueError(
+                f"Times are not strictly increasing (non-monotonic order): file {filenames[i - 1]} (time {prev}) "
+                f"is followed by file {fname} (time {t}). "
+                f"Decreasing or duplicate time."
+            )
+    # A lone NaN (state 0) or +inf passes the order test.
+    if not math.isfinite(t):
+        raise ValueError(f"Time is not finite: file {fname} (time {t})")
+    if i > 0:
+        _check_topology(state0, state, fname)
+        _check_identity(state0, state, filenames[0], fname)
+    times_list.append(t)
+    return t
 
 
 def _check_topology(state0: VtkState, state: VtkState, fname: str) -> None:
@@ -306,6 +368,12 @@ def _load_t01(paths: list[Path], warn_list: list[str]) -> T01Data | None:
             f"{', '.join(map(str, t01.skipped_lines[:5]))}"
             f"{', ...' if len(t01.skipped_lines) > 5 else ''})"
         )
+    if t01.superseded_rows:
+        warn_list.append(
+            f"T01 file {t01_path.name}: {t01.superseded_rows} data row(s) superseded by later "
+            f"rows with an equal or earlier TIME (solver restart or duplicate output); "
+            f"the later rows are used"
+        )
     if t01.times.size == 0:
         warn_list.append(
             f"T01 file {t01_path.name} has no data rows; "
@@ -317,36 +385,29 @@ def _load_t01(paths: list[Path], warn_list: list[str]) -> T01Data | None:
 def load_series(
     inputs: str | Path | Sequence[str | Path], progress_cb: Callable[[int, int], None] | None = None
 ) -> VtkSeries:
-    paths, manifest_times = _resolve_inputs(inputs)
+    warn_list: list[str] = []
+    paths, manifest_times = _resolve_inputs(inputs, warn_list)
+    filenames = [p.name for p in paths]
 
-    states = []
+    # Read and check file by file, so the first problem in file order is the one
+    # reported, exactly as load_series_lazy does (open point (e)).
+    states: list[VtkState] = []
+    times_list: list[float] = []
+    own_time0: float | None = None
     total = len(paths)
     for i, p in enumerate(paths):
         if progress_cb:
             progress_cb(i, total)
-        states.append(read_vtk(p))
-
-    filenames = [p.name for p in paths]
-    warn_list: list[str] = []
-
-    own_time0 = getattr(states[0], "time", None)
-    times_list = []
-    for i, state in enumerate(states):
+        state = read_vtk(p)
+        if i == 0:
+            own_time0 = getattr(state, "time", None)
         mt = manifest_times[i] if manifest_times is not None else None
-        t = _resolve_time(getattr(state, "time", None), mt, filenames[i], warn_list)
-        state.time = t
-        times_list.append(t)
+        state0 = states[0] if states else state
+        state.time = _check_state(i, state, state0, mt, filenames, times_list, warn_list)
+        states.append(state)
 
     times = np.array(times_list, dtype=np.float64)
-    _check_times(times, filenames)
-
-    state0 = states[0]
-    dialect = _detect_dialect(state0, own_time0)
-
-    for i in range(1, len(states)):
-        _check_topology(state0, states[i], filenames[i])
-        _check_identity(state0, states[i], filenames[0], filenames[i])
-
+    dialect = _detect_dialect(states[0], own_time0)
     t01_data = _load_t01(paths, warn_list)
 
     return VtkSeries(
@@ -354,7 +415,37 @@ def load_series(
     )
 
 
+def _natural_key(name: str) -> tuple:
+    """Sort key comparing ASCII digit runs as numbers: out_2 before out_10.
+
+    re.split with a capture group alternates text and digit runs, so equal
+    positions always hold the same type; the full name breaks ties.
+    """
+    parts = re.split(r"([0-9]+)", name)
+    return (
+        [int(p) if i % 2 else p.casefold() for i, p in enumerate(parts)],
+        name,
+    )
+
+
+def _same_state_error(a: Path, b: Path, what: str) -> ValueError:
+    a, b = sorted((a, b), key=lambda p: (p.name, str(p)))
+    # Names alone are ambiguous when a CLI glob spans folders (r1/runA000.vtk, r2/runA000.vtk).
+    na, nb = (a.name, b.name) if a.parent == b.parent else (str(a), str(b))
+    return ValueError(
+        f"{na} and {nb} are the same state ({what}); remove one of them "
+        f"or pass an explicit file list"
+    )
+
+
 def _sort_and_filter_files(files: list[Path]) -> list[Path]:
+    """Order a folder's / glob's files as states.
+
+    With ``<stem>A<number>.vtk|vtu`` names: only those files, by state number
+    (one stem allowed). Without: all files, in natural order of their names.
+    Two files holding the same state (``runA1.vtk`` and ``runA001.vtk``, or
+    the same name as ``.vtk`` and ``.vtu``) raise ``ValueError``.
+    """
     if not files:
         return []
 
@@ -376,10 +467,26 @@ def _sort_and_filter_files(files: list[Path]) -> list[Path]:
         raise ValueError(f"Multiple stems found: {stems_list}")
 
     if len(stems) == 0:
-        warnings.warn("No files matched the stem pattern, falling back to lexicographic sort.")
-        return sorted(files, key=lambda f: f.name)
+        warnings.warn(
+            "No files matched the <stem>A<number> state name pattern, "
+            "falling back to natural sort of the file names."
+        )
+        # Same folder and name, different extension (a CLI glob can span folders:
+        # step_1/out.vtk and step_2/out.vtk are different states).
+        seen_names: dict[tuple[Path, str], Path] = {}
+        for f in sorted(files, key=lambda f: f.name):
+            key = (f.parent, f.stem)
+            if key in seen_names:
+                raise _same_state_error(seen_names[key], f, "same name, different extension")
+            seen_names[key] = f
+        return sorted(files, key=lambda f: (_natural_key(f.name), _natural_key(str(f))))
 
     valid_files = [p for p in parsed if p[0] is not None]
+    seen_nums: dict[int, Path] = {}
+    for s, num, f in sorted(valid_files, key=lambda p: p[2].name):
+        if num in seen_nums:
+            raise _same_state_error(seen_nums[num], f, f"state number {num} of stem '{s}'")
+        seen_nums[num] = f
     valid_files.sort(key=lambda p: p[1])
     return [p[2] for p in valid_files]
 
@@ -448,11 +555,11 @@ def load_series_lazy(
     The returned ``LazyVtkSeries`` can iterate over states one at a time
     via :meth:`~LazyVtkSeries.iter_states`, keeping memory usage constant.
     """
-    paths, manifest_times = _resolve_inputs(inputs)
+    warn_list: list[str] = []
+    paths, manifest_times = _resolve_inputs(inputs, warn_list)
 
     # Read all states just for metadata (times, topology check), then discard
     filenames = [p.name for p in paths]
-    warn_list: list[str] = []
     times_list: list[float] = []
 
     def manifest_time(i: int) -> float | None:
@@ -462,25 +569,22 @@ def load_series_lazy(
     if progress_cb:
         progress_cb(0, len(paths))
     own_time0 = state0.time
-    state0.time = _resolve_time(own_time0, manifest_time(0), filenames[0], warn_list)
-    times_list.append(state0.time)
+    state0.time = _check_state(
+        0, state0, state0, manifest_time(0), filenames, times_list, warn_list
+    )
 
     for i in range(1, len(paths)):
         if progress_cb:
             progress_cb(i, len(paths))
-        state = read_vtk(paths[i], metadata_only=True)
-        fname = filenames[i]
-        times_list.append(_resolve_time(state.time, manifest_time(i), fname, warn_list))
-        _check_topology(state0, state, fname)
         # metadata_only keeps NODE_ID / ELEMENT_ID / PART_ID (vtk_reader
         # _METADATA_KEEP), so the lazy loader applies the same identity rule as
-        # load_series (bug report 2026-10-11 #33, c34).
-        _check_identity(state0, state, filenames[0], fname)
+        # load_series (bug report 2026-10-11 #33, c34). It does not parse point
+        # coordinates or result arrays, so their parse errors surface only later.
+        state = read_vtk(paths[i], metadata_only=True)
+        _check_state(i, state, state0, manifest_time(i), filenames, times_list, warn_list)
         # State is discarded here — only metadata kept
 
     times = np.array(times_list, dtype=np.float64)
-    _check_times(times, filenames)
-
     dialect = _detect_dialect(state0, own_time0)
     t01_data = _load_t01(paths, warn_list)
 
