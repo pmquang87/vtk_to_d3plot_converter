@@ -33,8 +33,9 @@ tensors, plastic strain, and element deletion flags.
 
 | Flag | Description |
 |------|-------------|
-| `-o / --output` | Output d3plot path (required) |
-| `--f64` | Write 64-bit output (default: 32-bit) |
+| `-o / --output` | Output d3plot path (required); geometry file + one state file per state |
+| `--f64` | Write 64-bit output (default) |
+| `--f32` | Write 32-bit output (overrides `--f64`) |
 | `--title` | Title string embedded in d3plot header |
 | `-q / --quiet` | Suppress informational output |
 
@@ -47,8 +48,17 @@ report = convert("path/to/vtk/dir", "output.d3plot", title="My model")
 print(f"{report.n_states} states, {report.n_nodes} nodes")
 ```
 
-Output is a family: `model.d3plot` (geometry) + `model.d3plot01` (states) —
-always keep them together.
+Output is a family: `model.d3plot` (geometry) plus one state file per state,
+`model.d3plot01`, `model.d3plot02`, ... (LS-DYNA convention; a 21-state series
+writes 22 files). Always keep all of them together. The CLI prints the range,
+e.g. `Wrote model.d3plot + 21 state files model.d3plot01..model.d3plot21`, and
+`report.output_files` lists every file. Re-converting to the same path replaces
+the whole family, including stale higher-numbered state files from a longer
+earlier run. The output path must be a file path, not an existing directory.
+
+Wildcards in CLI inputs (`"vtk\*.vtk"`) are expanded by the converter; the
+matches of each pattern are sorted by state number (`<stem>A<number>.vtk`), the
+same as for a directory input.
 
 ## Development
 

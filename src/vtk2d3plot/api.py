@@ -6,10 +6,33 @@ Milestone 2: working convert() pipeline with geometry + kinematics.
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
+
+# File-name comparison for the output family: case-insensitive exactly when the
+# platform's file system is (ntpath.normcase lower-cases, posixpath.normcase is
+# the identity). Module-level so tests can simulate the other platform.
+_normcase = os.path.normcase
+
+
+def _family_matcher(base_name: str) -> Callable[[str], bool]:
+    """Return a predicate: is *name* ``base_name`` or ``base_name`` + ASCII digits?
+
+    Mirrors lasso's own family rule ``<base>[0-9]+`` (``[0-9]``, not ``\\d``,
+    which would also match non-ASCII digits such as full-width ones).
+    """
+    pattern = re.compile(re.escape(_normcase(base_name)) + "[0-9]*")
+    return lambda name: pattern.fullmatch(_normcase(name)) is not None
+
+
+def _family_sort_key(base_name: str, name: str) -> int:
+    """Numeric state-file index of a family member (0 for the base file)."""
+    suffix = name[len(base_name) :]
+    return int(suffix) if suffix else 0
 
 
 class WarningCode(str, Enum):
@@ -57,6 +80,9 @@ class ConversionReport:
     n_inverted_tetras: int = 0
     warnings: list[str] = field(default_factory=list)
     structured_warnings: list[StructuredWarning] = field(default_factory=list)
+    # Every file of the written family, in order: the geometry file
+    # ``<output>`` first, then one state file per state ``<output>01`` ...
+    output_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -86,8 +112,15 @@ def convert(
         A directory containing VTK files, a glob-able stem, or an
         explicit list of ``.vtk`` file paths.
     output : str | Path
-        Path for the output d3plot (``<output>`` + ``<output>01`` will
-        be written).
+        Path of the output d3plot family. The geometry goes to ``<output>``
+        and each state to its own file ``<output>01``, ``<output>02``, ...
+        (one state file per state, LS-DYNA convention), so a series with
+        N states writes N + 1 files; :attr:`ConversionReport.output_files`
+        lists them. Keep all of them together. Existing members of the same
+        family (``<output>`` + ASCII digits, compared case-insensitively
+        only where the file system is) are replaced, including stale
+        higher-numbered state files. Must not be an existing directory
+        (``IsADirectoryError``).
     title : str
         Optional title string embedded in the d3plot header.
     f64 : bool
@@ -100,6 +133,13 @@ def convert(
     from .builder import build_d3plot
     from .mapping import map_topology
     from .series import load_series
+
+    out = Path(output)
+    if out.is_dir():
+        raise IsADirectoryError(
+            f"output path is an existing directory: {out} "
+            f"(give a file path, e.g. {out / 'model.d3plot'})"
+        )
 
     series = load_series(inputs, progress_cb=progress)
     model = map_topology(series.states[0])
@@ -126,31 +166,40 @@ def convert(
             f"Fixed {model.n_inverted_tetras} tetras with negative volume by swapping nodes to match LS-DYNA winding order."
         )
 
-    import re
     import shutil
     import tempfile
 
-    out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     # Record which files existed before we start (for safe failure cleanup)
     pre_existing = set()
-    escaped = re.escape(out.name)
-    pattern = re.compile(f"^{escaped}(\\d*)$", re.IGNORECASE)
+    in_family = _family_matcher(out.name)
     if out.parent.exists():
         for f in out.parent.iterdir():
-            if f.is_file() and pattern.match(f.name):
+            if f.is_file() and in_family(f.name):
                 pre_existing.add(f)
 
     bak_files = {}
     new_tmp_files = []
+    written: list[Path] = []
 
     # Atomic write: write to temp, then rename on success
     tmp_dir = out.parent
     try:
         with tempfile.TemporaryDirectory(dir=tmp_dir) as td:
             tmp_base = Path(td) / "tmp.d3plot"
+            # single_file=False: one state file per state (LS-DYNA convention)
             d3.write_d3plot(str(tmp_base), single_file=False)
+
+            # A directory at a final family name would swallow the file that
+            # shutil.move puts there: refuse before anything is moved or removed.
+            for f in Path(td).iterdir():
+                if f.is_file() and f.name.startswith("tmp.d3plot"):
+                    target = out.parent / f"{out.name}{f.name[len('tmp.d3plot') :]}"
+                    if target.is_dir():
+                        raise IsADirectoryError(
+                            f"output family file name is an existing directory: {target}"
+                        )
 
             # Move new files to temp names in the target dir first
             for f in Path(td).iterdir():
@@ -177,6 +226,7 @@ def convert(
                 suffix = tmp_f.name[len(f"_vtk2d3plot_tmp_{out.name}") :]
                 final_name = out.parent / f"{out.name}{suffix}"
                 shutil.move(str(tmp_f), str(final_name))
+                written.append(final_name)
 
             # Success! Delete backups
             for bak in bak_files.values():
@@ -264,4 +314,7 @@ def convert(
         n_inverted_tetras=model.n_inverted_tetras,
         warnings=warn_list,
         structured_warnings=structured,
+        output_files=[
+            str(p) for p in sorted(written, key=lambda p: _family_sort_key(out.name, p.name))
+        ],
     )
