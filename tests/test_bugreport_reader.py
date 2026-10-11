@@ -20,6 +20,7 @@ reader) inside the tests that use it.
 from __future__ import annotations
 
 import base64
+import binascii
 import lzma
 import zlib
 
@@ -151,15 +152,43 @@ def _write_vtu(
     return path
 
 
+def _b64decode_stops_at_padding() -> bool:
+    """True if this CPython's non-strict b64decode stops at the first padded quad.
+
+    meshio 5.3.5 decodes an appended base64 array with
+    ``base64.b64decode(appended[offset:])``, i.e. with every later array's padded
+    block still attached, and only works while the decoder stops at the first
+    padding (CPython 3.12.15, 3.14.2). CPython 3.13.16 follows RFC 4648 sec. 3.3
+    instead (Modules/binascii.c ``binascii_a2b_base64_impl``: a pad inside the
+    data is skipped and decoding goes on), so meshio fails on these files with
+    "Incorrect padding". The converter is not affected: its reader decodes each
+    padded block on its own (``vtk_reader._b64decode_concat``).
+    """
+    try:
+        return base64.b64decode(base64.b64encode(b"A") + base64.b64encode(b"BC")) == b"A"
+    except binascii.Error:
+        return False
+
+
+_MESHIO_READS_APPENDED_BASE64 = _b64decode_stops_at_padding()
+
+
 def _oracle(p, fmt):
-    """meshio read of a hand-written file, or None for raw appended data.
+    """meshio read of a hand-written file, or None where meshio cannot read the layout.
 
     meshio 5.3.5 converts raw appended data to base64 by rewriting each
     DataArray offset in place and then looking up the next raw offset with
     find(); a rewritten offset can equal a later raw offset, so it misreads
     valid raw files. Raw layouts are therefore not cross-checked with meshio.
+    Appended base64 is cross-checked only on interpreters whose base64 decoder
+    meshio can use (see ``_b64decode_stops_at_padding``); the reader itself is
+    still checked against the source arrays on every interpreter.
     """
-    return None if fmt == "appended-raw" else meshio.read(p)
+    if fmt == "appended-raw":
+        return None
+    if fmt == "appended-base64" and not _MESHIO_READS_APPENDED_BASE64:
+        return None
+    return meshio.read(p)
 
 
 def _hex_piece(shift=0.0, pd=None, cd=None):
@@ -445,10 +474,11 @@ def test_c16_appended_base64_per_array_blocks(tmp_path, compression):
 
     piece = _hex_piece()
     p = _write_vtu(tmp_path / "h.vtu", [piece], fmt="appended-base64", compressor=compression)
-    ref = meshio.read(p)
-    np.testing.assert_array_equal(
-        ref.point_data["Temperature"].reshape(-1), piece["point_data"]["Temperature"]
-    )
+    ref = _oracle(p, "appended-base64")
+    if ref is not None:
+        np.testing.assert_array_equal(
+            ref.point_data["Temperature"].reshape(-1), piece["point_data"]["Temperature"]
+        )
     _assert_hex(read_vtk(p), piece)
     s = read_vtk(p, metadata_only=True)
     assert s.cell_connectivity.tolist() == list(range(8)) and s.cell_types.tolist() == [12]
