@@ -10,6 +10,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -28,7 +29,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         required=True,
-        help="Output d3plot path (family: <name>.d3plot + <name>.d3plot01).",
+        help=(
+            "Output d3plot path. Writes a family: the geometry file <name>.d3plot "
+            "plus one state file per state <name>.d3plot01, <name>.d3plot02, ... "
+            "Keep all files together."
+        ),
     )
     ap.add_argument(
         "--f64",
@@ -82,11 +87,29 @@ def main(argv: list[str] | None = None) -> None:
 
     import glob as _glob
 
-    # Windows glob expansion (PowerShell doesn't expand wildcards)
+    from .series import _sort_and_filter_files
+
+    # Windows glob expansion (PowerShell doesn't expand wildcards). The matches
+    # of each pattern come in file-system order; sort them with the same
+    # numeric state ordering a directory input gets. Patterns and explicit
+    # files keep the order the user gave.
     expanded_inputs: list[str] = []
     for inp in args.inputs:
         if "*" in inp or "?" in inp:
-            expanded_inputs.extend(_glob.glob(inp))
+            matches = [Path(m) for m in _glob.glob(inp)]
+            try:
+                ordered = _sort_and_filter_files(matches)
+            except ValueError as exc:
+                print(f"ERROR: pattern {inp!r}: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+            dropped = sorted(set(map(str, matches)) - set(map(str, ordered)))
+            if dropped and not args.quiet:
+                print(
+                    f"WARNING: pattern {inp!r}: ignored {len(dropped)} file(s) without "
+                    f"the <stem>A<number>.vtk/.vtu state name: {', '.join(dropped)}",
+                    file=sys.stderr,
+                )
+            expanded_inputs.extend(str(m) for m in ordered)
         else:
             expanded_inputs.append(inp)
     if not expanded_inputs:
@@ -147,7 +170,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # Default title from input directory name
     if not args.title and len(args.inputs) == 1:
-        p = Path(args.inputs[0])
+        # Absolute (lexically normalised) path, so that relative inputs such as
+        # "vtk", "." or ".." get the same title as the same folder given absolute.
+        p = Path(os.path.abspath(args.inputs[0]))
         if p.is_dir():
             dir_name = p.name
             # If directory name is 'vtk', use parent directory name
@@ -182,7 +207,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.json:
         print(rep.to_json())
     elif not args.quiet:
-        print(f"Wrote {rep.output} and {rep.output}01")
+        state_files = rep.output_files[1:]
+        if len(state_files) == 1:
+            print(f"Wrote {rep.output_files[0]} + 1 state file {state_files[0]}")
+        elif state_files:
+            print(
+                f"Wrote {rep.output_files[0]} + {len(state_files)} state files "
+                f"{state_files[0]}..{state_files[-1]}"
+            )
+        else:
+            print(f"Wrote {rep.output}")
         print(
             f"  {rep.n_states} states, {rep.n_nodes} nodes, "
             f"{rep.n_solids} solids, {rep.n_shells} shells, "
