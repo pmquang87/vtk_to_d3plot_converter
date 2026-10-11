@@ -98,8 +98,12 @@ def _write_vtu(path, z=0.0, time_point_array=None):
 
 
 def _write_pvd(path, entries):
+    """PVD collection; an entry with time None gets no timestep attribute."""
     rows = "".join(
-        f'    <DataSet timestep="{t}" group="" part="0" file="{f}"/>\n' for t, f in entries
+        "    <DataSet"
+        + (f' timestep="{t}"' if t is not None else "")
+        + f' group="" part="0" file="{f}"/>\n'
+        for t, f in entries
     )
     path.write_text(
         '<?xml version="1.0"?>\n'
@@ -217,6 +221,58 @@ def test_c17_pvd_manifest_wins_over_file_time_with_warning(tmp_path):
         assert len(ser.warnings) == 1
         w = ser.warnings[0]
         assert "s1.vtu" in w and "7" in w and "0.5" in w and "PVD" in w
+
+
+def test_c17_pvd_without_timestep_uses_file_times(tmp_path):
+    """Bug report 2026-10-11 #15 (c17): a DataSet without timestep keeps the file's own time.
+
+    Guards the companion hunk of the manifest-wins rule: parse_pvd must give None
+    (not 0.0) for a missing timestep attribute, else every file time would be
+    overridden with 0.0 ("time 0.0 is followed by ... time 0.0").
+    """
+    from vtk2d3plot.series import parse_pvd
+
+    _write_vtk(tmp_path / "t_0.vtk", 0.0)
+    _write_vtk(tmp_path / "t_1.vtk", 2.0)
+    _write_vtk(tmp_path / "t_2.vtk", 4.0)
+    pvd = _write_pvd(
+        tmp_path / "nots.pvd", [(None, "t_0.vtk"), (None, "t_1.vtk"), (None, "t_2.vtk")]
+    )
+    assert [(ts, p.name) for ts, p in parse_pvd(pvd)] == [
+        (None, "t_0.vtk"),
+        (None, "t_1.vtk"),
+        (None, "t_2.vtk"),
+    ]
+    ser = load_series(pvd)
+    assert ser.times.tolist() == [0.0, 2.0, 4.0]
+    assert [s.time for s in ser.states] == [0.0, 2.0, 4.0]
+    assert ser.warnings == []
+    lazy = load_series_lazy(pvd)
+    assert lazy.times.tolist() == [0.0, 2.0, 4.0]
+    assert [p.name for p in lazy.paths] == ["t_0.vtk", "t_1.vtk", "t_2.vtk"]
+    assert lazy.warnings == []
+
+
+def test_c17_pvd_mixed_timestep_keeps_document_order(tmp_path):
+    """Bug report 2026-10-11 #15 (c17): some timesteps missing -> document order, mixed times.
+
+    t_1 has a manifest timestep equal to its file time; t_0 and t_2 have none and
+    use their file times. Sorting with a stand-in for None would put t_2 before t_1.
+    """
+    from vtk2d3plot.series import parse_pvd
+
+    _write_vtk(tmp_path / "t_0.vtk", 0.0)
+    _write_vtk(tmp_path / "t_1.vtk", 1.0)
+    _write_vtk(tmp_path / "t_2.vtk", 4.0)
+    pvd = _write_pvd(tmp_path / "mix.pvd", [(None, "t_0.vtk"), (1.0, "t_1.vtk"), (None, "t_2.vtk")])
+    assert [(ts, p.name) for ts, p in parse_pvd(pvd)] == [
+        (None, "t_0.vtk"),
+        (1.0, "t_1.vtk"),
+        (None, "t_2.vtk"),
+    ]
+    for ser in (load_series(pvd), load_series_lazy(pvd)):
+        assert ser.times.tolist() == [0.0, 1.0, 4.0]
+        assert ser.warnings == []
 
 
 # Series-level warnings reach ConversionReport only once api.convert() forwards
