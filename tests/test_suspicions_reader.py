@@ -274,6 +274,39 @@ def test_s04_metadata_after_every_array_kind(tmp_path, meta):
     _assert_mixed_state(read_vtk(p, metadata_only=meta), 1, meta)
 
 
+@pytest.mark.parametrize("meta", [False, True])
+def test_s04_information_keys_skipped_by_count(tmp_path, meta):
+    """S04 (verifier C13): a string-vector INFORMATION key writes ``DATA n`` and n item
+    lines; an empty item is a blank line and must not end the METADATA block. A
+    single-integer key ``DATA n`` (last key, block closed by its blank line) must not
+    swallow the next FIELD array."""
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    string_vec_last = (
+        "METADATA\nINFORMATION 2\nNAME L2_NORM_RANGE LOCATION vtkDataArray\nDATA 2 0 1 \n"
+        "NAME TAGS LOCATION vtkFoo\nDATA 3\nfirst\n\nthird\n\n"
+    )
+    string_vec_first = (
+        "METADATA\nCOMPONENT_NAMES\n\nINFORMATION 2\nNAME TAGS LOCATION vtkFoo\n"
+        "DATA 2\n\nsecond\nNAME COUNT LOCATION vtkBar\nDATA 7\n\n"
+    )
+    int_last = "METADATA\nINFORMATION 1\nNAME COUNT LOCATION vtkBar\nDATA 2\n\n"
+    text = _legacy("4.2", 0)
+    for before, md in (
+        # inside FIELD blocks, before the next array header (a leftover item line
+        # would be read as that header)
+        ("CYCLE 1 1 int", string_vec_first),  # after the 1-component FIELD TIME
+        ("EXTRA 2 5 double", string_vec_last),  # after 3DELEM_Plastic_Strain
+        ("CELL_DATA 5", int_last),  # after the FIELD Velocity array
+    ):
+        assert text.count(before) == 1
+        text = text.replace(before, md + before)
+    text += int_last  # after the last array of the file
+    p = tmp_path / "a.vtk"
+    p.write_text(text)
+    _assert_mixed_state(read_vtk(p, metadata_only=meta), 0, meta)
+
+
 def test_s04_metadata_without_blank_line_does_not_swallow_next_block(tmp_path):
     """S04 guard: a METADATA block missing its closing blank line (outside a FIELD block)
     ends at the next section keyword instead of swallowing that section."""
@@ -533,6 +566,8 @@ def test_s05_truncated_series_through_convert(tmp_path):
         "POINT_DATA 2\nSCALARS X double x\n1 2\n",
         "CELLS 1 4\n3 0 1 2\nCELL_TYPES 2\n5 5\n",
         "CELLS 1 4\n3 0 1 2\n",
+        "CELLS 1 5\n3 0 1 2 9\nCELL_TYPES 1\n5\n",  # size larger than the rows use
+        "CELLS 1 4\n3 0 1 2\nCELL_TYPES 1\n5\nPOINT_DATA 3\nVECTORS V double\n1 2 3\n",
     ],
 )
 @pytest.mark.parametrize("meta", [False, True])

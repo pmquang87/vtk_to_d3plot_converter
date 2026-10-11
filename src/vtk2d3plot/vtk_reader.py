@@ -591,8 +591,10 @@ class _LegacyLines:
         return self
 
     def __next__(self) -> str:
-        if self._back:
-            return self._back.pop()
+        while self._back:
+            line = self._back.pop()
+            if line:  # a pushed-back blank line is skipped like any blank line
+                return line
         for line in self._f:
             line = line.strip()
             if line:
@@ -655,14 +657,62 @@ def _skip_metadata(lines: _LegacyLines, ncomp: int) -> None:
         raw = lines.next_raw()
         if not raw:  # the closing blank line, or end of file
             return
-        word = raw.split()[0].upper()
+        words = raw.split()
+        word = words[0].upper()
         if word == "COMPONENT_NAMES":
             for _ in range(ncomp):
                 if lines.next_raw() is None:
                     return
+        elif word == "INFORMATION" and len(words) == 2 and words[1].isdigit():
+            _skip_information(lines, int(words[1]))
         elif word in _LEGACY_SECTION_WORDS:
             lines.push_back(raw)
             return
+
+
+def _skip_information(lines: _LegacyLines, nkeys: int) -> None:
+    """Skip the *nkeys* keys of an ``INFORMATION`` block (inside METADATA).
+
+    Each key is a ``NAME <key> LOCATION <loc>`` line and a ``DATA ...`` line. A
+    string-vector key writes ``DATA <n>`` and then n item lines, and an empty
+    item is a blank line, so the items must be skipped by count. VTK's reader
+    knows each key's type from its key registry; here ``DATA <n>`` is taken as
+    a string vector only when the line after the n candidate items is what must
+    follow a key (the next ``NAME`` line, or the closing blank line / end of file
+    after the last key). Otherwise it is a single-integer key.
+    """
+    for k in range(nkeys):
+        name = lines.next_raw()
+        while name == "":  # vtkDataReader::ReadInformation skips empty lines before a key
+            name = lines.next_raw()
+        if name is None:
+            return
+        if name.split()[0].upper() != "NAME":
+            lines.push_back(name)
+            return
+        data = lines.next_raw()
+        if data is None:
+            return
+        tok = data.split()
+        if len(tok) != 2 or tok[0].upper() != "DATA" or not tok[1].isdigit():
+            continue
+        ahead: list[str] = []
+        for _ in range(int(tok[1]) + 1):
+            line = lines.next_raw()
+            if line is None:
+                break
+            ahead.append(line)
+        last = k == nkeys - 1
+        if len(ahead) == int(tok[1]):  # the items end exactly at end of file
+            is_vector = last
+        elif len(ahead) == int(tok[1]) + 1:
+            follow = ahead[-1]
+            is_vector = follow == "" if last else follow.upper().startswith("NAME")
+        else:
+            is_vector = False
+        keep = ahead[int(tok[1]) :] if is_vector else ahead
+        for line in reversed(keep):
+            lines.push_back(line)
 
 
 def _count(tokens: list[str], i: int, what: str, path: str) -> int:
