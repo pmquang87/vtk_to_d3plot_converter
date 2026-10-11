@@ -13,12 +13,64 @@ from .shell_rotation import compute_shell_local_frames, rotate_stress_to_global
 
 
 def _find_key(d: dict, name: str) -> str | None:
-    """Case-insensitive key lookup in a dict."""
+    """Case-insensitive key lookup in a dict — the ONE lookup rule for all gathers.
+
+    Presence flags (``_any_state_has``) ignore case, so every gather must find
+    the array the same way (bug report 2026-10-11 #5).  An exact-case match
+    wins; otherwise the case-insensitive matches are taken in sorted order, so
+    the choice is deterministic.  When several names differ only in case,
+    ``_case_collision_warnings`` reports which one was used.
+    """
+    if name in d:
+        return name
     low = name.lower()
-    for k in d:
-        if k.lower() == low:
-            return k
-    return None
+    matches = sorted(k for k in d if k.lower() == low)
+    return matches[0] if matches else None
+
+
+def _cell_array(state, name: str) -> np.ndarray | None:
+    """Cell array ``name`` of one state (case-insensitive, see ``_find_key``), or None."""
+    k = _find_key(state.cell_data, name)
+    return None if k is None else state.cell_data[k]
+
+
+# Canonical names the builder gathers (cell / point data).  Used only to report
+# names that differ only in case within one state (no silent mixing).
+_GATHERED_CELL_NAMES = (
+    "VONM", "EPSP", "OFF", "EROSION_STATUS",
+    "3DELEM_Stress", "3DELEM_Strain", "3DELEM_Plastic_Strain", "3DELEM_Von_Mises",
+    "3DELEM_Specific_Energy",
+    "2DELEM_Stress_(lower)", "2DELEM_Stress_(upper)", "2DELEM_Stress_(membrane)",
+    "2DELEM_Plastic_Strain", "2DELEM_Plastic_Strain_Upper", "2DELEM_Plastic_Strain_Lower",
+    "2DELEM_Von_Mises", "2DELEM_Strain_(membrane)", "2DELEM_Strain_(lower)",
+    "2DELEM_Strain_(upper)", "2DELEM_Thickness", "2DELEM_Specific_Energy",
+)  # fmt: skip
+_GATHERED_POINT_NAMES = ("DISPLACEMENT", "VELOCITY", "ACCELERATION")
+
+
+def _case_collision_warnings(series: VtkSeries) -> list[str]:
+    """Warn when one state holds several gathered arrays whose names differ only in case."""
+    found: dict[tuple[str, tuple[str, ...], str, str], list[int]] = {}
+    for i, state in enumerate(series.states):
+        for kind, d, names in (
+            ("cell", state.cell_data, _GATHERED_CELL_NAMES),
+            ("point", state.point_data, _GATHERED_POINT_NAMES),
+        ):
+            for name in names:
+                low = name.lower()
+                keys = tuple(sorted(k for k in d if k.lower() == low))
+                if len(keys) > 1:
+                    used = _find_key(d, name)
+                    how = "exact name" if used == name else "first in sorted order"
+                    found.setdefault((kind, keys, used, how), []).append(i)
+    warns = []
+    for (kind, keys, used, how), states in found.items():
+        names = ", ".join(f"'{k}'" for k in keys)
+        warns.append(
+            f"{kind} arrays {names} differ only in case at states {states}; "
+            f"using '{used}' ({how}), the others are ignored"
+        )
+    return warns
 
 
 def _tensor_to_voigt(t: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
@@ -167,8 +219,9 @@ def _build_solid_results(
     if has_solid_stress:
         solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "3DELEM_Stress" in state.cell_data:
-                t = state.cell_data["3DELEM_Stress"][model.solid_src]  # (n_solids, 3, 3)
+            arr = _cell_array(state, "3DELEM_Stress")
+            if arr is not None:
+                t = arr[model.solid_src]  # (n_solids, 3, 3)
                 _tensor_to_voigt(t, out=solid_stress[i, :, 0, :])
             else:
                 solid_stress_fill.append(i)
@@ -177,8 +230,9 @@ def _build_solid_results(
         solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
         warn_list.append("solid stress tensor is synthetic-uniaxial from VONM")
         for i, state in enumerate(series.states):
-            if "VONM" in state.cell_data:
-                vonm = state.cell_data["VONM"][model.solid_src]
+            arr = _cell_array(state, "VONM")
+            if arr is not None:
+                vonm = arr[model.solid_src]
                 solid_stress[i, :, 0, 0] = vonm.astype(ftype)
             else:
                 solid_stress_fill.append(i)
@@ -187,8 +241,9 @@ def _build_solid_results(
         solid_stress = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
         warn_list.append("solid stress tensor is synthetic-uniaxial from 3DELEM_Von_Mises")
         for i, state in enumerate(series.states):
-            if "3DELEM_Von_Mises" in state.cell_data:
-                vonm = state.cell_data["3DELEM_Von_Mises"][model.solid_src]
+            arr = _cell_array(state, "3DELEM_Von_Mises")
+            if arr is not None:
+                vonm = arr[model.solid_src]
                 solid_stress[i, :, 0, 0] = vonm.astype(ftype)
             else:
                 solid_stress_fill.append(i)
@@ -201,8 +256,9 @@ def _build_solid_results(
     if has_solid_eps:
         solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "3DELEM_Plastic_Strain" in state.cell_data:
-                eps = state.cell_data["3DELEM_Plastic_Strain"][model.solid_src]
+            arr = _cell_array(state, "3DELEM_Plastic_Strain")
+            if arr is not None:
+                eps = arr[model.solid_src]
                 solid_eps[i, :, 0] = eps.astype(ftype)
             else:
                 solid_eps_fill.append(i)
@@ -210,8 +266,9 @@ def _build_solid_results(
         # C1 fix: port-dialect solids get EPSP
         solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "EPSP" in state.cell_data:
-                solid_eps[i, :, 0] = state.cell_data["EPSP"][model.solid_src].astype(ftype)
+            arr = _cell_array(state, "EPSP")
+            if arr is not None:
+                solid_eps[i, :, 0] = arr[model.solid_src].astype(ftype)
             else:
                 solid_eps_fill.append(i)
 
@@ -226,8 +283,9 @@ def _build_solid_results(
         )
         solid_history_vars = np.zeros((n_states, n_solids, 1, 1), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "3DELEM_Specific_Energy" in state.cell_data:
-                ie = state.cell_data["3DELEM_Specific_Energy"][model.solid_src]
+            arr = _cell_array(state, "3DELEM_Specific_Energy")
+            if arr is not None:
+                ie = arr[model.solid_src]
                 solid_history_vars[i, :, 0, 0] = ie.astype(ftype)
             else:
                 solid_history_vars_fill.append(i)
@@ -240,8 +298,9 @@ def _build_solid_results(
     if has_solid_strain:
         solid_strain = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "3DELEM_Strain" in state.cell_data:
-                t = state.cell_data["3DELEM_Strain"][model.solid_src]  # (n_solids, 3, 3)
+            arr = _cell_array(state, "3DELEM_Strain")
+            if arr is not None:
+                t = arr[model.solid_src]  # (n_solids, 3, 3)
                 _tensor_to_voigt(t, out=solid_strain[i, :, 0, :])
             else:
                 solid_strain_fill.append(i)
@@ -268,16 +327,16 @@ def _build_shell_results(
     if has_shell_stress_2layer:
         shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
         for i, state in enumerate(series.states):
-            lo_present = "2DELEM_Stress_(lower)" in state.cell_data
-            hi_present = "2DELEM_Stress_(upper)" in state.cell_data
-            if lo_present:
-                t_lo = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
+            arr_lo = _cell_array(state, "2DELEM_Stress_(lower)")
+            arr_hi = _cell_array(state, "2DELEM_Stress_(upper)")
+            if arr_lo is not None:
+                t_lo = arr_lo[model.shell_src]
                 _tensor_to_voigt(t_lo, out=shell_stress[i, :, 0, :])
             else:
                 # N1 fix: track partial-layer fill
                 shell_stress_fill.append((i, "2DELEM_Stress_(lower)"))
-            if hi_present:
-                t_hi = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
+            if arr_hi is not None:
+                t_hi = arr_hi[model.shell_src]
                 _tensor_to_voigt(t_hi, out=shell_stress[i, :, 1, :])
             else:
                 shell_stress_fill.append((i, "2DELEM_Stress_(upper)"))
@@ -295,8 +354,9 @@ def _build_shell_results(
             "von Mises / principal invariants are exact"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(membrane)" in state.cell_data:
-                t_mem = state.cell_data["2DELEM_Stress_(membrane)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Stress_(membrane)")
+            if arr is not None:
+                t_mem = arr[model.shell_src]
                 _tensor_to_voigt(t_mem, out=shell_stress[i, :, 0, :])
             else:
                 shell_stress_fill.append(i)
@@ -309,8 +369,9 @@ def _build_shell_results(
             f"mapped to layer {upper_layer}, element-local coordinates"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(upper)" in state.cell_data:
-                t = state.cell_data["2DELEM_Stress_(upper)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Stress_(upper)")
+            if arr is not None:
+                t = arr[model.shell_src]
                 _tensor_to_voigt(t, out=shell_stress[i, :, upper_layer, :])
             else:
                 shell_stress_fill.append(i)
@@ -322,8 +383,9 @@ def _build_shell_results(
             "mapped to layer 0, element-local coordinates"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Stress_(lower)" in state.cell_data:
-                t = state.cell_data["2DELEM_Stress_(lower)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Stress_(lower)")
+            if arr is not None:
+                t = arr[model.shell_src]
                 _tensor_to_voigt(t, out=shell_stress[i, :, 0, :])
             else:
                 shell_stress_fill.append(i)
@@ -332,8 +394,9 @@ def _build_shell_results(
         shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
         warn_list.append("shell stress tensor is synthetic-uniaxial from 2DELEM_Von_Mises")
         for i, state in enumerate(series.states):
-            if "2DELEM_Von_Mises" in state.cell_data:
-                vm = state.cell_data["2DELEM_Von_Mises"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Von_Mises")
+            if arr is not None:
+                vm = arr[model.shell_src]
                 shell_stress[i, :, 0, 0] = vm.astype(ftype)
             else:
                 shell_stress_fill.append(i)
@@ -341,8 +404,9 @@ def _build_shell_results(
         shell_stress = np.zeros((n_states, n_shells, n_shell_layers, 6), dtype=ftype)
         warn_list.append("stress tensor is synthetic-uniaxial from VONM")
         for i, state in enumerate(series.states):
-            if "VONM" in state.cell_data:
-                vonm = state.cell_data["VONM"][model.shell_src]  # (n_shells,)
+            arr = _cell_array(state, "VONM")
+            if arr is not None:
+                vonm = arr[model.shell_src]  # (n_shells,)
                 shell_stress[i, :, 0, 0] = vonm.astype(ftype)
             else:
                 shell_stress_fill.append(i)
@@ -375,8 +439,9 @@ def _build_shell_results(
     if has_shell_internal_energy:
         shell_internal_energy = np.zeros((n_states, n_shells), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "2DELEM_Specific_Energy" in state.cell_data:
-                ie = state.cell_data["2DELEM_Specific_Energy"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Specific_Energy")
+            if arr is not None:
+                ie = arr[model.shell_src]
                 shell_internal_energy[i, :] = ie.astype(ftype)
             else:
                 shell_internal_energy_fill.append(i)
@@ -389,18 +454,14 @@ def _build_shell_results(
     if has_shell_eps_2layer:
         shell_eps = np.zeros((n_states, n_shells, n_shell_layers), dtype=ftype)
         for i, state in enumerate(series.states):
-            lo = "2DELEM_Plastic_Strain_Lower" in state.cell_data
-            hi = "2DELEM_Plastic_Strain_Upper" in state.cell_data
-            if lo:
-                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
-                    model.shell_src
-                ].astype(ftype)
+            arr_lo = _cell_array(state, "2DELEM_Plastic_Strain_Lower")
+            arr_hi = _cell_array(state, "2DELEM_Plastic_Strain_Upper")
+            if arr_lo is not None:
+                shell_eps[i, :, 0] = arr_lo[model.shell_src].astype(ftype)
             else:
                 shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Lower"))
-            if hi:
-                shell_eps[i, :, 1] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
-                    model.shell_src
-                ].astype(ftype)
+            if arr_hi is not None:
+                shell_eps[i, :, 1] = arr_hi[model.shell_src].astype(ftype)
             else:
                 shell_eps_fill.append((i, "2DELEM_Plastic_Strain_Upper"))
     elif has_shell_eps_upper_only:
@@ -414,10 +475,9 @@ def _build_shell_results(
             f"mapped to layer {upper_eps_layer}"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain_Upper" in state.cell_data:
-                shell_eps[i, :, upper_eps_layer] = state.cell_data["2DELEM_Plastic_Strain_Upper"][
-                    model.shell_src
-                ].astype(ftype)
+            arr = _cell_array(state, "2DELEM_Plastic_Strain_Upper")
+            if arr is not None:
+                shell_eps[i, :, upper_eps_layer] = arr[model.shell_src].astype(ftype)
             else:
                 shell_eps_fill.append(i)
     elif has_shell_eps_lower_only:
@@ -430,10 +490,9 @@ def _build_shell_results(
             "mapped to layer 0"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain_Lower" in state.cell_data:
-                shell_eps[i, :, 0] = state.cell_data["2DELEM_Plastic_Strain_Lower"][
-                    model.shell_src
-                ].astype(ftype)
+            arr = _cell_array(state, "2DELEM_Plastic_Strain_Lower")
+            if arr is not None:
+                shell_eps[i, :, 0] = arr[model.shell_src].astype(ftype)
             else:
                 shell_eps_fill.append(i)
     elif has_shell_eps_single:
@@ -441,8 +500,9 @@ def _build_shell_results(
         n_layers = n_shell_layers if n_shell_layers > 0 else 1
         shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "2DELEM_Plastic_Strain" in state.cell_data:
-                eps = state.cell_data["2DELEM_Plastic_Strain"][model.shell_src].astype(ftype)
+            arr = _cell_array(state, "2DELEM_Plastic_Strain")
+            if arr is not None:
+                eps = arr[model.shell_src].astype(ftype)
                 for layer in range(n_layers):
                     shell_eps[i, :, layer] = eps
             else:
@@ -451,8 +511,9 @@ def _build_shell_results(
         n_layers = n_shell_layers if n_shell_layers > 0 else 1
         shell_eps = np.zeros((n_states, n_shells, n_layers), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "EPSP" in state.cell_data:
-                eps_val = state.cell_data["EPSP"][model.shell_src].astype(ftype)
+            arr = _cell_array(state, "EPSP")
+            if arr is not None:
+                eps_val = arr[model.shell_src].astype(ftype)
                 for layer in range(n_layers):
                     shell_eps[i, :, layer] = eps_val
             else:
@@ -469,15 +530,15 @@ def _build_shell_results(
         upper_layer = min(1, n_layers - 1)
         shell_strain = np.zeros((n_states, n_shells, n_layers, 6), dtype=ftype)
         for i, state in enumerate(series.states):
-            lo_present = "2DELEM_Strain_(lower)" in state.cell_data
-            hi_present = "2DELEM_Strain_(upper)" in state.cell_data
-            if lo_present:
-                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+            arr_lo = _cell_array(state, "2DELEM_Strain_(lower)")
+            arr_hi = _cell_array(state, "2DELEM_Strain_(upper)")
+            if arr_lo is not None:
+                t = arr_lo[model.shell_src]
                 _tensor_to_voigt(t, out=shell_strain[i, :, 0, :])
             else:
                 shell_strain_fill.append((i, "2DELEM_Strain_(lower)"))
-            if hi_present:
-                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+            if arr_hi is not None:
+                t = arr_hi[model.shell_src]
                 _tensor_to_voigt(t, out=shell_strain[i, :, upper_layer, :])
             else:
                 shell_strain_fill.append((i, "2DELEM_Strain_(upper)"))
@@ -500,8 +561,9 @@ def _build_shell_results(
             "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(upper)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(upper)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Strain_(upper)")
+            if arr is not None:
+                t = arr[model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
                 shell_strain[i, :, upper_layer, :] = voigt
@@ -520,8 +582,9 @@ def _build_shell_results(
             "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(lower)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(lower)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Strain_(lower)")
+            if arr is not None:
+                t = arr[model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
                 shell_strain[i, :, upper_layer, :] = voigt
@@ -538,8 +601,9 @@ def _build_shell_results(
             "but raw component values differ from global frame"
         )
         for i, state in enumerate(series.states):
-            if "2DELEM_Strain_(membrane)" in state.cell_data:
-                t = state.cell_data["2DELEM_Strain_(membrane)"][model.shell_src]
+            arr = _cell_array(state, "2DELEM_Strain_(membrane)")
+            if arr is not None:
+                t = arr[model.shell_src]
                 voigt = _tensor_to_voigt(t).astype(ftype)
                 shell_strain[i, :, 0, :] = voigt
                 shell_strain[i, :, upper_layer, :] = voigt
@@ -554,10 +618,9 @@ def _build_shell_results(
     if has_shell_thickness:
         shell_thickness = np.zeros((n_states, n_shells), dtype=ftype)
         for i, state in enumerate(series.states):
-            if "2DELEM_Thickness" in state.cell_data:
-                shell_thickness[i, :] = state.cell_data["2DELEM_Thickness"][model.shell_src].astype(
-                    ftype
-                )
+            arr = _cell_array(state, "2DELEM_Thickness")
+            if arr is not None:
+                shell_thickness[i, :] = arr[model.shell_src].astype(ftype)
             else:
                 shell_thickness_fill.append(i)
 
@@ -578,18 +641,14 @@ def build_d3plot(
     itype = np.int64 if f64 else np.int32
 
     # ----------------------------------------------------------------
-    # O(1) Key Lookups: normalize VTK array keys once to eliminate linear scans
+    # Key lookups: one rule for every gather (_find_key — exact case first,
+    # then case-insensitive), matching the case-insensitive presence flags.
+    # Cell gathers use the module-level _cell_array().
     # ----------------------------------------------------------------
-    _point_keys = [{k.lower(): k for k in state.point_data} for state in series.states]
-    _cell_keys = [{k.lower(): k for k in state.cell_data} for state in series.states]
-
     def get_point_key(i: int, k: str) -> str | None:
-        return _point_keys[i].get(k.lower())
+        return _find_key(series.states[i].point_data, k)
 
-    def get_cell_key(i: int, k: str) -> str | None:
-        return _cell_keys[i].get(k.lower())
-
-    warn_list: list[str] = []
+    warn_list: list[str] = _case_collision_warnings(series)
     n_states = len(series.states)
     n_nodes = series.states[0].points.shape[0]
     n_solids = model.solid_conn.shape[0]
@@ -753,14 +812,14 @@ def build_d3plot(
         )
 
 
-    solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, _solid_history_vars_fill, solid_strain, solid_strain_fill = _build_solid_results(
+    solid_stress, solid_stress_fill, solid_eps, solid_eps_fill, solid_history_vars, solid_history_vars_fill, solid_strain, solid_strain_fill = _build_solid_results(
         series, model, ftype, n_states, n_solids, warn_list,
         has_solid_stress, has_vonm, has_solid_vonmises,
         has_solid_eps, has_epsp,
         has_solid_internal_energy, has_solid_strain, _tensor_to_voigt
     )
 
-    shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, _shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill = _build_shell_results(
+    shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill = _build_shell_results(
         series, model, ftype, n_states, n_shells, n_shell_layers, warn_list, rotate_shell_stress,
         has_shell_stress_2layer, has_shell_stress_membrane, has_shell_stress_upper_only,
         has_shell_stress_lower_only, has_shell_vonmises_official, has_vonm,
@@ -801,30 +860,33 @@ def build_d3plot(
         if n_shells > 0:
             shell_alive = np.ones((n_states, n_shells), dtype=ftype)
             for i, state in enumerate(series.states):
-                if alive_key in state.cell_data:
-                    shell_alive[i] = state.cell_data[alive_key][model.shell_src].astype(ftype)
+                arr = _cell_array(state, alive_key)
+                if arr is not None:
+                    shell_alive[i] = arr[model.shell_src].astype(ftype)
                 else:
                     shell_alive_fill.append(i)
         if n_solids > 0:
             solid_alive = np.ones((n_states, n_solids), dtype=ftype)
             for i, state in enumerate(series.states):
-                if alive_key in state.cell_data:
-                    solid_alive[i] = state.cell_data[alive_key][model.solid_src].astype(ftype)
+                arr = _cell_array(state, alive_key)
+                if arr is not None:
+                    solid_alive[i] = arr[model.solid_src].astype(ftype)
                 else:
                     solid_alive_fill.append(i)
         if n_beams > 0:
             beam_alive = np.ones((n_states, n_beams), dtype=ftype)
             for i, state in enumerate(series.states):
-                if alive_key in state.cell_data:
-                    beam_alive[i] = state.cell_data[alive_key][model.beam_src].astype(ftype)
+                arr = _cell_array(state, alive_key)
+                if arr is not None:
+                    beam_alive[i] = arr[model.beam_src].astype(ftype)
                 else:
                     beam_alive_fill.append(i)
 
         if alive_key == "EROSION_STATUS":
-            for alive_arr, src_arr, fill_list, type_name in [
-                (shell_alive, model.shell_src, shell_alive_fill, "shell"),
-                (solid_alive, model.solid_src, solid_alive_fill, "solid"),
-                (beam_alive, model.beam_src, beam_alive_fill, "beam"),
+            for alive_arr, part_idx, fill_list, type_name in [
+                (shell_alive, model.shell_part_idx, shell_alive_fill, "shell"),
+                (solid_alive, model.solid_part_idx, solid_alive_fill, "solid"),
+                (beam_alive, model.beam_part_idx, beam_alive_fill, "beam"),
             ]:
                 if alive_arr is None:
                     continue
@@ -843,31 +905,43 @@ def build_d3plot(
                 if n_never > 0:
                     # Force never-alive elements to alive (they are rigid/non-integrated)
                     alive_arr[:, never_alive_mask] = 1.0
-                    # Find which part IDs these elements belong to
-                    pid_data = series.states[0].cell_data.get("PART_ID")
-                    if pid_data is not None:
-                        affected_pids = sorted(
-                            {
-                                int(pid_data[src_arr[i]])
-                                for i in range(len(src_arr))
-                                if never_alive_mask[i]
-                            }
-                        )
-                        warn_list.append(
-                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state "
-                            f"(parts {affected_pids}); forced alive (rigid/non-integrated)"
-                        )
-                    else:
-                        warn_list.append(
-                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state; "
-                            f"forced alive (rigid/non-integrated)"
-                        )
+                    # Part IDs of these elements as written to the d3plot (the model's
+                    # part table), not a second lookup of the raw PART_ID array.
+                    affected_pids = sorted(
+                        {int(p) for p in model.part_ids[part_idx[never_alive_mask]]}
+                    )
+                    warn_list.append(
+                        f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state "
+                        f"(parts {affected_pids}); forced alive (rigid/non-integrated)"
+                    )
 
-                # Step 2: Latch 1→0 transitions (element dies permanently, no resurrection)
+                # Step 2: Latch 1→0 transitions (element dies permanently, no resurrection).
+                # An element is dead only after it has been observed alive (M9 rule,
+                # bug report 2026-10-11 #6): leading zeros of an element activated after
+                # state 0 are kept as they are and do not latch.  Only states with real
+                # data count as observations (filled states default to 1.0).
+                seen_alive = present_mask[0] & (alive_arr[0] == 1.0)
+                revived_any = np.zeros(alive_arr.shape[1], dtype=bool)
+                revived_states: list[int] = []
                 for si in range(1, n_states):
                     # Elements that were dead at previous state stay dead
-                    was_dead = alive_arr[si - 1] == 0.0
+                    was_dead = seen_alive & (alive_arr[si - 1] == 0.0)
+                    if present_mask[si]:
+                        # Report only the state of each element's first revival; a
+                        # revival that continues into later states is not a new one.
+                        revived = was_dead & (alive_arr[si] != 0.0) & ~revived_any
+                        if revived.any():
+                            revived_any |= revived
+                            revived_states.append(si)
                     alive_arr[si, was_dead] = 0.0
+                    if present_mask[si]:
+                        seen_alive |= alive_arr[si] == 1.0
+                if revived_states:
+                    warn_list.append(
+                        f"EROSION_STATUS: {int(revived_any.sum())} {type_name} elements return "
+                        f"to 1 after being eroded (states {revived_states}); "
+                        f"kept eroded (no resurrection)"
+                    )
 
     # ================================================================
     # M4/N1 fix: emit aggregated fill warnings (partial-layer aware)
@@ -877,7 +951,9 @@ def build_d3plot(
         ("element_solid_stress", solid_stress_fill),
         ("element_solid_effective_plastic_strain", solid_eps_fill),
         ("element_solid_strain", solid_strain_fill),
+        ("element_solid_history_variables", solid_history_vars_fill),
         ("element_shell_thickness", shell_thickness_fill),
+        ("element_shell_internal_energy", shell_internal_energy_fill),
         ("node_velocity", node_vel_fill),
         ("node_acceleration", node_accel_fill),
     ]
