@@ -219,6 +219,60 @@ def test_c17_pvd_manifest_wins_over_file_time_with_warning(tmp_path):
         assert "s1.vtu" in w and "7" in w and "0.5" in w and "PVD" in w
 
 
+# Series-level warnings reach ConversionReport only once api.convert() forwards
+# series.warnings (api.py is outside cluster E; cross-cluster request). Strict
+# xfail: when api.py is fixed these XPASS and fail the suite, so remove the marker.
+_NEEDS_API_FORWARD = pytest.mark.xfail(
+    strict=True,
+    reason="api.convert() does not forward series.warnings yet (cross-cluster request to api.py)",
+)
+
+
+@_NEEDS_API_FORWARD
+def test_c17_pvd_override_warning_reaches_report(tmp_path):
+    """Bug report 2026-10-11 #15 (c17): the manifest override is in convert().warnings."""
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot.api import convert
+
+    _write_vtu(tmp_path / "s0.vtu", z=0.0, time_point_array=0.0)
+    _write_vtu(tmp_path / "s1.vtu", z=0.1, time_point_array=7.0)  # disagrees with 0.5
+    pvd = _write_pvd(tmp_path / "m.pvd", [(0.0, "s0.vtu"), (0.5, "s1.vtu")])
+    rep = convert(pvd, tmp_path / "m.d3plot")
+    d = D3plot(str(tmp_path / "m.d3plot"))
+    assert np.allclose(d.arrays[ArrayType.global_timesteps], [0.0, 0.5], rtol=0, atol=1e-12)
+    assert (
+        "PVD manifest timestep 0.5 used for s1.vtu; it overrides the file's own time 7.0"
+        in rep.warnings
+    )
+
+
+def test_c17_multipart_pvd_clear_error(tmp_path):
+    """Bug report 2026-10-11 #15 (c17): a multi-part PVD (part=0/1 per timestep) is refused clearly."""
+    from vtk2d3plot.series import parse_pvd
+
+    _write_vtu(tmp_path / "p0_t0.vtu", z=0.0)
+    _write_vtu(tmp_path / "p1_t0.vtu", z=0.0)
+    pvd = tmp_path / "mp.pvd"
+    pvd.write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection" version="0.1">\n'
+        "  <Collection>\n"
+        '    <DataSet timestep="0" part="0" file="p0_t0.vtu"/>\n'
+        '    <DataSet timestep="0" part="1" file="p1_t0.vtu"/>\n'
+        "  </Collection>\n"
+        "</VTKFile>\n",
+        encoding="utf-8",
+    )
+    pattern = r"mp\.pvd is a multi-part collection \(parts 0, 1\).*not supported"
+    with pytest.raises(ValueError, match=pattern):
+        parse_pvd(pvd)
+    with pytest.raises(ValueError, match=pattern):
+        load_series(pvd)
+    with pytest.raises(ValueError, match=pattern):
+        load_series_lazy(pvd)
+
+
 # ── #19 (c24): identity arrays in all states or in none ─────────────────────
 
 
@@ -299,6 +353,21 @@ def test_c02_convert_with_header_only_t01(tmp_path):
     assert d.arrays.get(ArrayType.global_total_energy) is None
 
 
+@_NEEDS_API_FORWARD
+def test_c02_header_only_t01_warning_reaches_report(tmp_path):
+    """Bug report 2026-10-11 #27 (c02): 'no data rows' is in convert().warnings."""
+    from vtk2d3plot.api import convert
+
+    for i in range(3):
+        shutil.copy(PORT_DIR / f"BOXIMPA00{i}.vtk", tmp_path)
+    (tmp_path / "BOXIMPT01.csv").write_text(T01_HEADER, encoding="utf-8")
+    rep = convert(tmp_path, tmp_path / "box.d3plot")
+    assert (
+        "T01 file BOXIMPT01.csv has no data rows; "
+        "global energies from it (IE, KE, EN) are not written" in rep.warnings
+    )
+
+
 # ── #31 (c33): NaN time ─────────────────────────────────────────────────────
 
 
@@ -308,6 +377,27 @@ def test_c33_nan_time_clear_error(tmp_path):
     _write_vtk(tmp_path / "runA001.vtk", float("nan"))
     _write_vtk(tmp_path / "runA002.vtk", 2.0)
     pattern = r"Times are not strictly increasing.*runA000\.vtk \(time 0\.0\) is followed by file runA001\.vtk \(time nan\)"
+    with pytest.raises(ValueError, match=pattern):
+        load_series(tmp_path)
+    with pytest.raises(ValueError, match=pattern):
+        load_series_lazy(tmp_path)
+
+
+def test_c33_single_state_nan_time(tmp_path):
+    """Bug report 2026-10-11 #31 (c33): a lone NaN time (no difference to check) is refused."""
+    _write_vtk(tmp_path / "runA000.vtk", float("nan"))
+    pattern = r"Time is not finite: file runA000\.vtk \(time nan\)"
+    with pytest.raises(ValueError, match=pattern):
+        load_series(tmp_path)
+    with pytest.raises(ValueError, match=pattern):
+        load_series_lazy(tmp_path)
+
+
+def test_c33_inf_last_time(tmp_path):
+    """Bug report 2026-10-11 #31 (c33): +inf as last time passes the difference test but is refused."""
+    _write_vtk(tmp_path / "runA000.vtk", 0.0)
+    _write_vtk(tmp_path / "runA001.vtk", float("inf"))
+    pattern = r"Time is not finite: file runA001\.vtk \(time inf\)"
     with pytest.raises(ValueError, match=pattern):
         load_series(tmp_path)
     with pytest.raises(ValueError, match=pattern):

@@ -36,9 +36,21 @@ def parse_pvd(path: Path) -> list[tuple[float | None, Path]]:
     if collection is None:
         raise ValueError("Missing Collection element")
 
+    datasets = collection.findall("DataSet")
+    # One file per time is supported. A multi-part collection (several pieces per
+    # timestep, told apart by the "part" attribute) would need the pieces merged
+    # into one mesh; refuse it clearly instead of a "duplicate time" error later.
+    parts = {d.attrib["part"] for d in datasets if "part" in d.attrib}
+    if len(parts) > 1:
+        parts_str = ", ".join(sorted(parts, key=lambda p: (len(p), p)))
+        raise ValueError(
+            f"{path.name} is a multi-part collection (parts {parts_str}); "
+            f"multi-part PVD files are not supported, give one file per timestep"
+        )
+
     entries: list[tuple[float | None, Path]] = []
     parent_dir = path.parent
-    for dataset in collection.findall("DataSet"):
+    for dataset in datasets:
         ts_attr = dataset.attrib.get("timestep")
         ts = float(ts_attr) if ts_attr is not None else None
         file_name = dataset.attrib.get("file", "")
@@ -220,6 +232,11 @@ def _check_times(times: np.ndarray, filenames: list[str]) -> None:
             f"is followed by file {filenames[idx + 1]} (time {times[idx + 1]}). "
             f"Decreasing or duplicate time."
         )
+    # A lone NaN (single state) or a +inf last time passes the difference test.
+    nonfinite = np.flatnonzero(~np.isfinite(times))
+    if nonfinite.size:
+        idx = int(nonfinite[0])
+        raise ValueError(f"Time is not finite: file {filenames[idx]} (time {times[idx]})")
 
 
 def _check_topology(state0: VtkState, state: VtkState, fname: str) -> None:
