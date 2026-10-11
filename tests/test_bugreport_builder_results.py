@@ -242,6 +242,166 @@ def test_c13_official_lowercase_results_identical(tmp_path):
     assert non_unmapped_low == non_unmapped_up
 
 
+def _sym(a, b, c, d, e, f):
+    """Symmetric 3x3 from Voigt [xx, yy, zz, xy, xz, yz]."""
+    return [[a, d, e], [d, b, f], [e, f, c]]
+
+
+# Scenario -> (cell scalars, cell tensors) as functions of the state number k.
+# Cells: one hex (cell 0) and one quad (cell 1).  Together the scenarios reach
+# every gather site of _build_solid_results/_build_shell_results that the W3
+# and port fixtures do not exercise (membrane, two-layer strain, upper-only,
+# lower-only, 2DELEM_Von_Mises / 3DELEM_Von_Mises fallbacks, thickness,
+# single 2DELEM_Plastic_Strain, 3DELEM_Strain, port VONM/EPSP on a solid).
+_GATHER_SCENARIOS = {
+    "membrane": lambda k: (
+        {
+            "3DELEM_Von_Mises": [100.0 + k, 0.0],
+            "3DELEM_Plastic_Strain": [0.5 + k, 0.0],
+            "2DELEM_Thickness": [0.0, 1.25 + k],
+            "2DELEM_Plastic_Strain": [0.0, 0.03 + k],
+        },
+        {
+            "3DELEM_Strain": [_sym(1.0 + k, 2, 3, 4, 5, 6), _sym(0, 0, 0, 0, 0, 0)],
+            "2DELEM_Stress_(membrane)": [_sym(0, 0, 0, 0, 0, 0), _sym(7.0 + k, 8, 0, 9, 0, 0)],
+            "2DELEM_Strain_(membrane)": [_sym(0, 0, 0, 0, 0, 0), _sym(0.1 + k, 0.2, 0, 0.3, 0, 0)],
+        },
+    ),
+    "port_solid": lambda k: (
+        {
+            "VONM": [200.0 + k, 300.0 + k],
+            "EPSP": [0.2 + k, 0.3 + k],
+            "OFF": [1.0, 1.0 - k],
+        },
+        {},
+    ),
+    "two_layer_strain": lambda k: (
+        {"2DELEM_Von_Mises": [0.0, 55.0 + k]},
+        {
+            "2DELEM_Strain_(lower)": [_sym(0, 0, 0, 0, 0, 0), _sym(0.4 + k, 0.5, 0, 0.6, 0, 0)],
+            "2DELEM_Strain_(upper)": [_sym(0, 0, 0, 0, 0, 0), _sym(0.7 + k, 0.8, 0, 0.9, 0, 0)],
+        },
+    ),
+    "upper_only": lambda k: (
+        {"2DELEM_Plastic_Strain_Upper": [0.0, 0.11 + k]},
+        {
+            "2DELEM_Stress_(upper)": [_sym(0, 0, 0, 0, 0, 0), _sym(21.0 + k, 22, 0, 23, 0, 0)],
+            "2DELEM_Strain_(upper)": [_sym(0, 0, 0, 0, 0, 0), _sym(0.21 + k, 0.22, 0, 0.23, 0, 0)],
+        },
+    ),
+    "lower_only": lambda k: (
+        {"2DELEM_Plastic_Strain_Lower": [0.0, 0.12 + k]},
+        {
+            "2DELEM_Stress_(lower)": [_sym(0, 0, 0, 0, 0, 0), _sym(31.0 + k, 32, 0, 33, 0, 0)],
+            "2DELEM_Strain_(lower)": [_sym(0, 0, 0, 0, 0, 0), _sym(0.31 + k, 0.32, 0, 0.33, 0, 0)],
+        },
+    ),
+}
+
+# Arrays each scenario must fill with real (non-zero) data, pinned by one value:
+# (ArrayType name, index into the array, expected value at state 1).
+_GATHER_PINS = {
+    "membrane": [
+        ("element_solid_stress", (1, 0, 0, 0), 101.0),
+        ("element_solid_strain", (1, 0, 0, 0), 2.0),
+        ("element_shell_stress", (1, 0, 0, 0), 8.0),
+        ("element_shell_strain", (1, 0, 0, 0), 1.1),
+        ("element_shell_thickness", (1, 0), 2.25),
+        ("element_shell_effective_plastic_strain", (1, 0, 0), 1.03),
+    ],
+    "port_solid": [
+        ("element_solid_stress", (1, 0, 0, 0), 201.0),
+        ("element_solid_effective_plastic_strain", (1, 0, 0), 1.2),
+        ("element_shell_stress", (1, 0, 0, 0), 301.0),
+        ("element_shell_effective_plastic_strain", (1, 0, 0), 1.3),
+        ("element_shell_is_alive", (1, 0), 0.0),
+    ],
+    "two_layer_strain": [
+        ("element_shell_stress", (1, 0, 0, 0), 56.0),
+        ("element_shell_strain", (1, 0, 0, 0), 1.4),
+        ("element_shell_strain", (1, 0, 1, 0), 1.7),
+    ],
+    "upper_only": [
+        ("element_shell_stress", (1, 0, 1, 0), 22.0),
+        ("element_shell_strain", (1, 0, 1, 0), 1.21),
+        ("element_shell_effective_plastic_strain", (1, 0, 1), 1.11),
+    ],
+    "lower_only": [
+        ("element_shell_stress", (1, 0, 0, 0), 32.0),
+        ("element_shell_strain", (1, 0, 0, 0), 1.31),
+        ("element_shell_effective_plastic_strain", (1, 0, 0), 1.12),
+    ],
+}
+
+
+def _build_in_memory(paths):
+    """load_series -> map_topology -> build_d3plot, no lasso write/read round trip."""
+    from vtk2d3plot.builder import build_d3plot
+    from vtk2d3plot.mapping import map_topology
+    from vtk2d3plot.series import load_series
+
+    series = load_series(paths)
+    return build_d3plot(series, map_topology(series.states[0]))
+
+
+def _odd_case(name: str) -> str:
+    """'2DELEM_Strain_(lower)' -> '2dElEm_sTrAiN_(LoWeR)': no letter keeps its case pattern."""
+    out, flip = [], False
+    for ch in name:
+        if ch.isalpha():
+            out.append(ch.upper() if flip else ch.lower())
+            flip = not flip
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+@pytest.mark.parametrize("scenario", sorted(_GATHER_SCENARIOS))
+@pytest.mark.parametrize("recase", [str.lower, _odd_case], ids=["lower", "oddcase"])
+def test_c13_every_gather_site_ignores_case(tmp_path, scenario, recase):
+    """Bug report 2026-10-11 #5 (c12, c13): every result gather finds a re-cased array.
+
+    The same synthetic hex + quad series is built twice, once with the canonical
+    names and once with every result name re-cased. All builder arrays must be
+    identical and carry the pinned input values (not a zero fill).
+    """
+    from lasso.dyna import ArrayType
+
+    pts = [
+        (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+        (3, 0, 0), (4, 0, 0), (4, 1, 0), (3, 1, 0),
+    ]  # fmt: skip
+    cells = [(12, list(range(8))), (9, [8, 9, 10, 11])]
+    runs = {}
+    for tag, rename in (("canon", lambda n: n), ("recased", recase)):
+        folder = tmp_path / tag
+        folder.mkdir()
+        for k in range(2):
+            scal, tens = _GATHER_SCENARIOS[scenario](k)
+            _write_official(
+                folder / f"runA{k:03d}.vtk",
+                time_val=0.1 * (k + 1),
+                points=pts,
+                cells=cells,
+                cell_scalars={rename(n): v for n, v in scal.items()},
+                cell_tensors={rename(n): v for n, v in tens.items()},
+            )
+        runs[tag] = _build_in_memory(sorted(folder.glob("runA*.vtk")))
+
+    (d_c, w_c), (d_r, w_r) = runs["canon"], runs["recased"]
+    assert set(d_c.arrays) == set(d_r.arrays)
+    for key in d_c.arrays:
+        assert np.array_equal(np.asarray(d_c.arrays[key]), np.asarray(d_r.arrays[key])), key
+    for name, idx, value in _GATHER_PINS[scenario]:
+        got = float(np.asarray(d_r.arrays[getattr(ArrayType, name)])[idx])
+        assert got == pytest.approx(value, rel=1e-6), (name, idx)
+    assert not [w for w in w_r if "zero-filled" in w]
+    assert [w for w in w_r if not w.startswith("unmapped arrays")] == [
+        w for w in w_c if not w.startswith("unmapped arrays")
+    ]
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="needs the cell-array check of the 'unmapped arrays ignored' block in "
@@ -368,6 +528,40 @@ def test_c14_erosion_latch_late_activation(tmp_path):
         "EROSION_STATUS: 1 shell elements return to 1 after being eroded "
         "(states [2]); kept eroded (no resurrection)"
     ) in rep.warnings
+
+
+def test_c14_resurrection_warning_names_first_revival_only(tmp_path):
+    """Bug report 2026-10-11 #6 (c14): the resurrection warning names the state of the revival.
+
+    Element 1 reads [1, 0, 1, 1]: it revives once, at state 2. State 3 is the same
+    revival continued, not a second one, so the warning names states [2] only.
+    """
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot.api import convert
+
+    es = [[1, 1], [0, 1], [1, 1], [1, 1]]
+    pts, cells = _quads(2)
+    for k in range(4):
+        _write_official(
+            tmp_path / f"runA{k:03d}.vtk",
+            time_val=0.1 * (k + 1),
+            points=pts,
+            cells=cells,
+            cell_scalars={"EROSION_STATUS": es[k]},
+        )
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    d = _read(tmp_path / "out.d3plot")
+    order = np.argsort(d.arrays[ArrayType.element_shell_ids])
+    alive = d.arrays[ArrayType.element_shell_is_alive][:, order]
+    assert np.array_equal(alive, [[1.0, 1.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
+    hits = [w for w in rep.warnings if "after being eroded" in w]
+    assert hits == [
+        (
+            "EROSION_STATUS: 1 shell elements return to 1 after being eroded "
+            "(states [2]); kept eroded (no resurrection)"
+        )
+    ]
 
 
 def test_c14_erosion_latch_ignores_filled_states(tmp_path):

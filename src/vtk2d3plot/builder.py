@@ -927,7 +927,9 @@ def build_d3plot(
                     # Elements that were dead at previous state stay dead
                     was_dead = seen_alive & (alive_arr[si - 1] == 0.0)
                     if present_mask[si]:
-                        revived = was_dead & (alive_arr[si] != 0.0)
+                        # Report only the state of each element's first revival; a
+                        # revival that continues into later states is not a new one.
+                        revived = was_dead & (alive_arr[si] != 0.0) & ~revived_any
                         if revived.any():
                             revived_any |= revived
                             revived_states.append(si)
