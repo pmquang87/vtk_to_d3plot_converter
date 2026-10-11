@@ -60,6 +60,14 @@ Wildcards in CLI inputs (`"vtk\*.vtk"`) are expanded by the converter; the
 matches of each pattern are sorted by state number (`<stem>A<number>.vtk`), the
 same as for a directory input.
 
+A directory input loads its `<stem>A<number>.vtk/.vtu` files in state-number
+order and lists any other `.vtk/.vtu` files it ignores in the report warnings;
+a folder without such names is loaded in natural name order (`out_2` before
+`out_10`). The same state in two files (`runA1.vtk` and `runA001.vtk`, or
+`runA001.vtk` and `runA001.vtu`) is an error. Global energies come from a
+`<stem>T01.csv` next to the states; after a solver restart (a row whose TIME
+is not after the previous row) the later rows win, with a report warning.
+
 ## Development
 
 ```powershell
