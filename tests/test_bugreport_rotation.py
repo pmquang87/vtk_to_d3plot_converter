@@ -258,11 +258,14 @@ def test_c06_rotation_skips_synthetic_uniaxial_stress(tmp_path):
     assert not [w for w in rep.warnings if "CLSKEW3" in w]
 
 
-def _write_two_quad_state(path, time_val):
-    """Official-dialect state: one good quad and one zero-area (collinear) quad,
-    both with 2-layer shell stress tensors (local xx = 100, yy = 50, xy = 10)."""
-    pts = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
-    pts += [(5, 0, 0), (6, 0, 0), (7, 0, 0), (8, 0, 0)]
+def _write_two_quad_state(path, time_val, degenerate=1):
+    """Official-dialect state with two quads, both with 2-layer shell stress tensors
+    (local xx = 100, yy = 50, xy = 10). Quad number `degenerate` (0 or 1) has
+    zero area (collinear nodes, r = 0); the other one is a unit square."""
+    good = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    flat = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)]
+    first, second = (flat, good) if degenerate == 0 else (good, flat)
+    pts = first + [(x + 5, y, z) for x, y, z in second]
     lines = [
         "# vtk DataFile Version 3.0",
         "two quads",
@@ -315,3 +318,20 @@ def test_c06_rotation_warns_about_degenerate_shells(tmp_path):
         "(zeroed or partly lost)"
     )
     assert bad == [expected]
+
+
+def test_c06_degenerate_shell_count_is_union_over_states(tmp_path):
+    """Bug report 2026-10-11 #1 (c06), builder side: quad 1 is flat only in state 0
+    and quad 2 only in state 1. Two different shells are affected, so the count is
+    the union over states (2), not the largest per-state count (1)."""
+    from vtk2d3plot import convert
+
+    _write_two_quad_state(tmp_path / "runA000.vtk", 0.1, degenerate=0)
+    _write_two_quad_state(tmp_path / "runA001.vtk", 0.2, degenerate=1)
+    rep = convert(
+        sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot", rotate_shell_stress=True
+    )
+    bad = [w for w in rep.warnings if "degenerate local frame" in w]
+    assert len(bad) == 1
+    assert bad[0].startswith("2 shells have a degenerate local frame")
+    assert "(first: state 0)" in bad[0]

@@ -41,6 +41,11 @@ GOLDEN_SUBDIRS = ["golden", "port_dialect"]
 
 SKIP_EXTENSIONS = {".pyc", ".pyo", ".log", ".tmp"}
 
+# LS-PrePost scratch files (lspost.db, lspost.msg, ...). LS-PrePost writes them
+# next to a d3plot it opens; a run that crashes or times out leaves them behind.
+# They are never fixtures, so they are neither hashed nor reported as NEW.
+SKIP_NAME_RE = re.compile(r"^lspost\.", re.IGNORECASE)
+
 # Names that are always binary, whatever their content.
 BINARY_NAME_RE = re.compile(r"\.(d3plot(\d+)?|png)$", re.IGNORECASE)
 
@@ -84,7 +89,12 @@ def _collect_files(root: Path = DATA_DIR) -> list[Path]:
         d = root / sub
         if d.exists():
             for f in sorted(d.rglob("*")):
-                if f.is_file() and f.suffix not in SKIP_EXTENSIONS and f.name != MANIFEST_NAME:
+                if (
+                    f.is_file()
+                    and f.suffix not in SKIP_EXTENSIONS
+                    and f.name != MANIFEST_NAME
+                    and not SKIP_NAME_RE.match(f.name)
+                ):
                     files.append(f)
     return files
 

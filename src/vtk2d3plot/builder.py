@@ -439,15 +439,16 @@ def _build_shell_results(
             "(no element frame to rotate from)"
         )
     elif shell_stress is not None and rotate_shell_stress:
-        n_degenerate, first_degenerate = 0, None
+        ever_degenerate = np.zeros(n_shells, dtype=bool)  # union over states
+        first_degenerate = None
         for i, state in enumerate(series.states):
             R = compute_shell_local_frames(state.points, model.shell_conn)
             bad = degenerate_shell_frames(R)
-            if bad.any():
-                n_degenerate = max(n_degenerate, int(bad.sum()))
-                if first_degenerate is None:
-                    first_degenerate = i
+            if bad.any() and first_degenerate is None:
+                first_degenerate = i
+            ever_degenerate |= bad
             shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
+        n_degenerate = int(ever_degenerate.sum())
 
         # The source warning above says "element-local coordinates"; after the
         # rotation that is no longer true, so reword exactly those phrases.

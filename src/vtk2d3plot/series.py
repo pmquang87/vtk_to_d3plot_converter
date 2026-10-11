@@ -69,6 +69,9 @@ def parse_pvd(path: Path) -> list[tuple[float | None, Path]]:
 class T01Data:
     times: np.ndarray
     columns: dict[str, np.ndarray]
+    # Malformed data rows that were skipped (1-based file line numbers), e.g. a
+    # last row cut off by a run that crashed while writing.
+    skipped_lines: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -105,7 +108,10 @@ def parse_t01_csv(path: Path) -> T01Data:
 
     A file without data rows (only its comment and header lines, e.g. from a run
     that stopped before its first time-history output) returns empty ``times``
-    and ``columns == {}``, so no global variable is resampled from it.
+    and ``columns == {}``, so no global variable is resampled from it. A data
+    row with the wrong number of fields or a non-numeric value (e.g. a last row
+    cut off by a crash) is skipped and its line number recorded in
+    ``skipped_lines``; the T01 file is optional, so it never aborts a conversion.
     """
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -117,17 +123,24 @@ def parse_t01_csv(path: Path) -> T01Data:
     headers = [h.strip() for h in header_line.split(",")]
 
     data = []
-    for line in lines[2:]:
+    skipped: list[int] = []
+    for line_no, line in enumerate(lines[2:], start=3):
         line = line.strip()
         if not line:
             continue
-        data.append([float(x) for x in line.split(",")])
+        fields = line.split(",")
+        try:
+            if len(fields) != len(headers):
+                raise ValueError
+            data.append([float(x) for x in fields])
+        except ValueError:
+            skipped.append(line_no)
 
     if "TIME" not in headers:
         raise ValueError("TIME column missing from T01 CSV")
 
     if not data:
-        return T01Data(times=np.array([]), columns={})
+        return T01Data(times=np.array([]), columns={}, skipped_lines=skipped)
     data = np.array(data)
 
     time_idx = headers.index("TIME")
@@ -138,7 +151,7 @@ def parse_t01_csv(path: Path) -> T01Data:
         if h != "TIME":
             columns[h] = data[:, i]
 
-    return T01Data(times=times, columns=columns)
+    return T01Data(times=times, columns=columns, skipped_lines=skipped)
 
 
 # ── shared helpers for load_series / load_series_lazy ───────────────────────
@@ -286,6 +299,13 @@ def _load_t01(paths: list[Path], warn_list: list[str]) -> T01Data | None:
     if t01_path is None:
         return None
     t01 = parse_t01_csv(t01_path)
+    if t01.skipped_lines:
+        warn_list.append(
+            f"T01 file {t01_path.name}: {len(t01.skipped_lines)} malformed data row(s) "
+            f"skipped (wrong field count or non-numeric value; lines "
+            f"{', '.join(map(str, t01.skipped_lines[:5]))}"
+            f"{', ...' if len(t01.skipped_lines) > 5 else ''})"
+        )
     if t01.times.size == 0:
         warn_list.append(
             f"T01 file {t01_path.name} has no data rows; "

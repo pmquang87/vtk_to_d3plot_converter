@@ -668,6 +668,31 @@ def test_c32_field_arrays_reach_d3plot(tmp_path):
     np.testing.assert_allclose(d.arrays[ArrayType.element_shell_stress][:, 0, 0, 0], [10.0, 11.0])
 
 
+def test_c32_string_field_array_in_cell_data(tmp_path):
+    """Bug report 2026-10-11 #17 (c32) follow-up: a string FIELD array inside CELL_DATA
+    must not make the whole file fail; the numeric array beside it is kept, and the
+    conversion report lists the string array as unmapped."""
+    from vtk2d3plot.api import convert
+    from vtk2d3plot.vtk_reader import read_vtk
+
+    for k in range(2):
+        txt = _OFFICIAL_FIELD.format(title="x", time=str(0.5 * k), dz="0.0", vonm="42.0")
+        txt = txt.replace(
+            "CELL_DATA 1\nFIELD FieldData 1\n",
+            "CELL_DATA 1\nFIELD FieldData 2\nLabel 1 1 string\nabc\n",
+        )
+        (tmp_path / f"runA{k:03d}.vtk").write_text(txt)
+    s = read_vtk(tmp_path / "runA000.vtk")
+    np.testing.assert_array_equal(s.cell_data["VONM"], [42.0])
+    assert s.cell_data["Label"].tolist() == ["abc"]
+    m = read_vtk(tmp_path / "runA000.vtk", metadata_only=True)
+    assert m.cell_data == {} and m.time == 0.0
+
+    rep = convert(tmp_path, tmp_path / "o.d3plot")
+    unmapped = [w for w in rep.warnings if w.startswith("unmapped arrays")]
+    assert len(unmapped) == 1 and "Label" in unmapped[0]
+
+
 def test_c32_field_tuple_count_mismatch_raises(tmp_path):
     """Bug report 2026-10-11 #17 (c32): a FIELD array whose tuple count is not the POINT_DATA count raises."""
     from vtk2d3plot.vtk_reader import read_vtk

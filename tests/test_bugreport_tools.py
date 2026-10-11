@@ -106,6 +106,23 @@ def test_c08_manifest_independent_of_line_endings(tmp_path):
         assert "OK: all 88 golden files match manifest" in r.stdout, eol
 
 
+def test_c39_lsprepost_scratch_files_are_not_new_fixtures(tmp_path):
+    """Bug report 2026-10-11 #22 (c39) follow-up: NEW files fail verify, but an
+    LS-PrePost scratch file left next to a golden d3plot (lspost.db after a crash
+    or timeout) is not a fixture and must not fail it; any other new file does."""
+    repo = tmp_path / "repo"
+    data = _fake_repo(repo, None)
+    w3 = data / "golden" / "W3_SETUP_Ball_impact__ton-mm-s" / "d3plot"
+    (w3 / "lspost.db").write_bytes(b"\x00scratch")
+    (w3 / "lspost.msg").write_text("Finished reading model\n", encoding="ascii")
+    r = _verify(repo)
+    assert r.returncode == 0, r.stdout[-2000:]
+    assert "OK: all 88 golden files match manifest" in r.stdout
+    (w3 / "notes.txt").write_text("not a fixture\n", encoding="ascii")
+    r = _verify(repo)
+    assert r.returncode == 1 and "notes.txt" in r.stdout
+
+
 def test_c08_manifest_detects_one_byte_change(tmp_path):
     """Bug report 2026-10-11 #21 (c08): a one-byte content change must still fail verify."""
     repo = tmp_path / "lf"
@@ -216,6 +233,40 @@ def test_c21_verify_byid_zero_node_id(tmp_path):
     # ASCII print precision of anim_to_vtk vs the float32 golden: about 5e-4.
     assert max(v for *_, v in st) < 1.0e-3
     assert max(v for *_, v in st) > 1.0e-5
+
+
+@pytest.mark.parametrize(
+    ("title", "field_time", "expected"),
+    [
+        ("pyradioss state t=2.902412789E-04", None, 2.902412789e-04),
+        ("Result=extracted", None, None),
+        ("state at t=end", None, None),
+        ("pyradioss count=5 state", None, None),
+        ("crash test at t=1.5.", "0.5", 0.5),
+    ],
+)
+def test_c18_verify_byid_title_time_rule(tmp_path, title, field_time, expected):
+    """Bug report 2026-10-11 #29 (c18) sibling: the reference verifier's own title-time
+    regex crashed on 'Result=extracted' and read 'count=5' as time 5.0. It must
+    follow the converter's rule: word boundary, well-formed number, FIELD TIME first."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_byid_under_test", TOOLS / "reference" / "verify_byid.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    lines = ["# vtk DataFile Version 3.0", title, "ASCII", "DATASET UNSTRUCTURED_GRID"]
+    if field_time is not None:
+        lines += ["FIELD FieldData 1", "TIME 1 1 double", field_time]
+    lines += ["POINTS 4 float", "0 0 0 1 0 0 1 1 0 0 1 0", "CELLS 1 5", "4 0 1 2 3"]
+    lines += ["CELL_TYPES 1", "9"]
+    p = tmp_path / "a.vtk"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    n_pts, n_cells, _pts, node_ids, tv = mod.parse_vtk(p)
+    assert (n_pts, n_cells, node_ids) == (4, 1, None)
+    assert tv == (None if expected is None else pytest.approx(expected))
 
 
 def _renamed_copy(src_dir: Path, stem: str, numbers: dict[int, int], dst: Path) -> Path:
@@ -449,10 +500,16 @@ def test_c20_state_without_fringe_lsprepost(tmp_path, monkeypatch):
     from tools.lspp_check import check_d3plot
 
     monkeypatch.delenv("LSPP_EXE", raising=False)
+    # Render a copy: LS-PrePost writes scratch files (lspost.db) next to the
+    # d3plot it opens, and the golden folder must stay untouched.
+    fam = tmp_path / "w3"
+    fam.mkdir()
+    for f in W3_D3.parent.glob(W3_D3.name + "*"):
+        shutil.copy(f, fam / f.name)
     digests = {}
     for tag, st in (("s1", 1), ("s1_again", 1), ("s11", 11)):
         png = tmp_path / f"{tag}.png"
-        r = check_d3plot(W3_D3, png=png, state=st)
+        r = check_d3plot(fam / W3_D3.name, png=png, state=st)
         assert r["loaded"], r["detail"]
         assert png.stat().st_size > 5000
         digests[tag] = hashlib.sha256(png.read_bytes()).hexdigest()

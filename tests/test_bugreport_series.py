@@ -404,6 +404,33 @@ def test_c02_convert_with_header_only_t01(tmp_path):
     assert d.arrays.get(ArrayType.global_total_energy) is None
 
 
+def test_c25_truncated_last_t01_row_is_skipped(tmp_path):
+    """Bug report 2026-10-11 #27 (c02+c25) follow-up: a T01 file whose last data row
+    was cut off (a run that crashed while writing) must not abort the conversion;
+    the bad row is skipped with a warning and the good rows are used."""
+    from lasso.dyna import ArrayType, D3plot
+
+    from vtk2d3plot.api import convert
+
+    for i in range(3):
+        shutil.copy(PORT_DIR / f"BOXIMPA00{i}.vtk", tmp_path)
+    lines = (PORT_DIR / "BOXIMPT01.csv").read_text(encoding="utf-8").splitlines(keepends=True)
+    cut = lines[6][: len(lines[6]) // 2]
+    (tmp_path / "BOXIMPT01.csv").write_text("".join(lines[:6]) + cut, encoding="utf-8")
+
+    t01 = parse_t01_csv(tmp_path / "BOXIMPT01.csv")
+    assert t01.skipped_lines == [7]
+    assert t01.times.size == 4
+
+    rep = convert(tmp_path, tmp_path / "box.d3plot")
+    assert (
+        "T01 file BOXIMPT01.csv: 1 malformed data row(s) skipped (wrong field count or "
+        "non-numeric value; lines 7)" in rep.warnings
+    )
+    te = D3plot(str(tmp_path / "box.d3plot")).arrays[ArrayType.global_total_energy]
+    assert te.shape == (3,) and np.all(te > 0.1)  # KE alone is about 0.156
+
+
 def test_c02_header_only_t01_warning_reaches_report(tmp_path):
     """Bug report 2026-10-11 #27 (c02): 'no data rows' is in convert().warnings."""
     from vtk2d3plot.api import convert

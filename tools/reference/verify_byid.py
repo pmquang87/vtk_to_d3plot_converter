@@ -32,7 +32,10 @@ from lasso.dyna.d3plot import D3plot
 
 TIME_RTOL = 1.0e-5
 # Port dialect: the time is only in the title line, "pyradioss state t=%.9E".
-TITLE_TIME_RE = re.compile(r"t=([0-9.eE+\-]+)")
+# Same rule as the converter (bug report 2026-10-11 #29): "t=" must start a word
+# and be followed by a well-formed number, so "Result=extracted" or "count=5"
+# give no time instead of a crash or a wrong time.
+TITLE_TIME_RE = re.compile(r"\bt=([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(?!\w|\.\w)")
 
 
 def _read_tokens(lines, start, count):
@@ -72,7 +75,10 @@ def parse_vtk(path):
             continue
         i += 1
     if tv is None and title_m is not None:
-        tv = float(title_m.group(1))
+        try:
+            tv = float(title_m.group(1))
+        except ValueError:
+            tv = None
     return n_pts, n_cells, pts, node_ids, tv
 
 

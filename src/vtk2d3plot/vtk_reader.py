@@ -184,6 +184,8 @@ _LEGACY_DTYPES = {
     "float": np.float64,
     "double": np.float64,
 }
+# Legacy string array types (FIELD arrays only); read as words, never as numbers.
+_LEGACY_STRING_TYPES = frozenset({"string", "utf8_string"})
 
 
 def _as_tensor_if_9(arr: np.ndarray) -> np.ndarray:
@@ -633,6 +635,18 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                         )
                         if name.upper() == "TIME" and num_vals > 0:
                             field_time = float(vals[0])
+                    elif val_type.lower() in _LEGACY_STRING_TYPES:
+                        # vtkDataWriter writes one encoded word per string value.
+                        # A string array has no d3plot field; keep it so the
+                        # conversion report lists it as unmapped instead of the
+                        # whole file failing (bug report 2026-10-11 #17 follow-up).
+                        vals = _read_tokens(
+                            lines, num_vals, filepath=path, initial_tokens=header[4:]
+                        )
+                        sarr = np.array(vals, dtype=str)
+                        current_data_dict[name] = (
+                            sarr.reshape((ntuples, ncomp)) if ncomp > 1 else sarr
+                        )
                     else:
                         arr = _read_numeric_block(
                             lines,

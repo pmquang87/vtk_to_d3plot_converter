@@ -443,6 +443,48 @@ def test_c13_unmapped_warning_keeps_unused_recased_arrays(tmp_path):
     assert "VONM" not in unmapped[0]
 
 
+def test_c13_recased_identity_only_and_unsupported_arrays(tmp_path):
+    """Bug report 2026-10-11 #5 (c13): the unmapped-array check follows what is really used.
+
+    Only re-cased identity arrays exist ('element_id', 'part_id'): mapping.py reads
+    identity arrays with exact case and ignores them (sequential IDs, one part), so
+    they must be listed as unmapped. Lower-case known-but-unsupported arrays (cell
+    '1delem_von_mises', point 'contact_forces') must stay in the 'known but
+    unsupported' list, not move to 'unmapped'.
+    """
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot.api import convert
+
+    pts, cells = _quads(2)
+    contact = "VECTORS contact_forces float\n" + "0 0 1.5\n" * len(pts)
+    for k in range(2):
+        p = tmp_path / f"runA{k:03d}.vtk"
+        _write_official(
+            p,
+            time_val=0.1 * (k + 1),
+            points=pts,
+            cells=cells,
+            cell_scalars={"VONM": [5.0, 7.0], "1delem_von_mises": [0.0, 2.5]},
+            part_key="part_id",
+            part_values=[3, 3],
+        )
+        txt = p.read_text(encoding="utf-8")
+        txt = txt.replace("SCALARS ELEMENT_ID int", "SCALARS element_id int")
+        txt = txt.replace("VECTORS Displacement float", contact + "VECTORS Displacement float")
+        p.write_text(txt, encoding="utf-8")
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    unmapped = [w for w in rep.warnings if w.startswith("unmapped arrays")]
+    assert unmapped == ["unmapped arrays ignored: element_id (absmax=2), part_id (absmax=3)"]
+    unsupported = [w for w in rep.warnings if w.startswith("known but unsupported")]
+    expected = (
+        "known but unsupported arrays (no d3plot equivalent): "
+        "1delem_von_mises (absmax=2.5), contact_forces (absmax=1.5)"
+    )
+    assert unsupported == [expected]
+    assert _read(tmp_path / "out.d3plot").arrays[ArrayType.part_ids].tolist() == [1]
+
+
 def test_c13_case_collision_exact_wins(tmp_path):
     """Bug report 2026-10-11 #5 (c13): 'VONM' and 'vonm' in one state: exact case wins, warned."""
     from lasso.dyna import ArrayType
