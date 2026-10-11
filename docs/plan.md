@@ -58,6 +58,18 @@ Int16, PVD times, legacy FIELD-in-data (#13-#18); lazy-loader ID check (#33);
 golden manifest line-ending independent (#21); one d3plot file per state is
 documented, not changed (#37, keeps commit 2aa270f).
 
+[x] **Milestone 14: Suspicions round (28 unchecked leads + 5 milestone-13 open points)**  
+Record: `docs/reviews/2026-10-11-suspicions-triage.md`. Failing-first tests in
+`tests/test_suspicions_*.py` (marker `suspicions`). 24 leads fixed, 4 already
+fixed by milestone 13. Highlights: VTK 5.1 OFFSETS/CONNECTIVITY and VTK 8+
+METADATA support, truncated files always give a named ValueError, T01 restart
+rows, natural sort, duplicate-state error, same first error from both loaders,
+atomic write never touches user files, warning codes from message templates
+(`classify_warning`), single-layer shell stress copied to every layer, beam
+null words 0, `--rotate-shell-stress` also rotates shell strain (as a tensor).
+The solid shear slot placement was verified from anim_to_vtk.cpp: the code
+was already right.
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that
