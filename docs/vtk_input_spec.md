@@ -116,7 +116,9 @@ these automatically (they make a port file look like an official file).
   well-formed float, no unit glued on: "time t=0.5s" gives no time); FIELD
   TIME takes precedence. An empty title line is allowed; a file that ends
   after the title raises "Truncated VTK file" (bug report 2026-10-11 #17, #18,
-  #29, #30). VTK 8+ METADATA / INFORMATION blocks are not supported (open).
+  #29, #30). VTK 8+ METADATA blocks (component names, INFORMATION keys) are
+  skipped by count after every array, and legacy 5.1 files (`CELLS` followed
+  by `OFFSETS` / `CONNECTIVITY`) are read (milestone 14 S04, S23).
 - Large real-world fixture for reader stress tests (not in repo):
   `E:\openradioss_run\getriebekette\badamid_konditioniert_MAT024_no-fail_STRFLG=11\vtk\`
   (66 MB, 46686 nodes, 205488 cells, types {3,5,9,10}).
