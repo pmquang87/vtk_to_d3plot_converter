@@ -80,6 +80,29 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _default_title(inputs: list[str]) -> str:
+    """Default d3plot title: the name of the folder that holds the inputs.
+
+    A directory input is that folder; any other input (a .vtk/.vtu file, a
+    file matched by a glob pattern, a .pvd manifest, a "<folder>/<stem>" stem)
+    is held by its parent folder. When all inputs share one folder its name is
+    the title, and a folder called "vtk" gives its parent's name. Inputs from
+    several folders give no title. Paths are made absolute (lexically
+    normalised) first, so relative inputs such as "vtk", "." or ".." get the
+    same title as the same folder given absolute.
+    """
+    folders = set()
+    for inp in inputs:
+        p = Path(os.path.abspath(inp))
+        folders.add(p if p.is_dir() else p.parent)
+    if len(folders) != 1:
+        return ""
+    folder = folders.pop()
+    if folder.name.lower() == "vtk" and folder.parent.name:
+        return folder.parent.name
+    return folder.name
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``vtk2d3plot`` console script."""
     ap = _build_parser()
@@ -97,6 +120,11 @@ def main(argv: list[str] | None = None) -> None:
     for inp in args.inputs:
         if "*" in inp or "?" in inp:
             matches = [Path(m) for m in _glob.glob(inp)]
+            if not matches:
+                # Bug report 2026-10-11, suspicion S26: a pattern that matches
+                # nothing is an error even when another input matches.
+                print(f"ERROR: pattern '{inp}' matched no files", file=sys.stderr)
+                raise SystemExit(1)
             try:
                 ordered = _sort_and_filter_files(matches)
             except ValueError as exc:
@@ -168,17 +196,8 @@ def main(argv: list[str] | None = None) -> None:
                 except ValueError:
                     pass
 
-    # Default title from input directory name
-    if not args.title and len(args.inputs) == 1:
-        # Absolute (lexically normalised) path, so that relative inputs such as
-        # "vtk", "." or ".." get the same title as the same folder given absolute.
-        p = Path(os.path.abspath(args.inputs[0]))
-        if p.is_dir():
-            dir_name = p.name
-            # If directory name is 'vtk', use parent directory name
-            if dir_name.lower() == "vtk" and p.parent.name:
-                dir_name = p.parent.name
-            args.title = dir_name
+    if not args.title:
+        args.title = _default_title(args.inputs)
 
     # Per-state progress callback for non-quiet mode
     progress_fn = None

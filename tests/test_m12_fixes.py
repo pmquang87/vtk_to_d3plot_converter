@@ -145,6 +145,7 @@ def test_atomic_case_insensitive_cleanup(tmp_path):
 def test_atomic_locked_file_injection(tmp_path):
     """T5: A locked file must cause failure and restore the pre-existing files, leaving no tmp files."""
     import shutil
+    from pathlib import Path
     from unittest.mock import patch
 
     from conftest import PORT_DIR
@@ -161,24 +162,36 @@ def test_atomic_locked_file_injection(tmp_path):
 
     orig_out_stat = out.stat().st_mtime
 
-    # Second write, but we inject a failure in shutil.move when moving tmp_target_base to out
+    # Second write, but we inject a failure in shutil.move the first time a NEW
+    # file is moved onto a final family name (src outside the output folder).
+    # Milestone 14 (suspicion S14): the scratch files now live in one private
+    # folder, so the trigger no longer keys on the old "_vtk2d3plot_tmp_" names.
     original_move = shutil.move
+    failed = []
 
     def failing_move(src, dst):
-        if "box.d3plot" in str(dst) and "_vtk2d3plot_tmp_" in str(src):
+        s, d = Path(src), Path(dst)
+        if (
+            not failed
+            and d.parent == tmp_path
+            and d.name.startswith("box.d3plot")
+            and s.parent != tmp_path
+        ):
+            failed.append(d.name)
             raise OSError("Simulated lock by LS-PrePost")
         return original_move(src, dst)
 
     with patch("shutil.move", side_effect=failing_move), pytest.raises(OSError):
         convert(PORT_DIR, out)
+    assert failed, "the injected failure never triggered"
 
     # Assert original files survived exactly as they were
     assert out.exists()
     assert out.stat().st_mtime == orig_out_stat
     assert out01.exists()
 
-    # Assert no _vtk2d3plot_tmp_ files leaked
-    tmp_files = list(tmp_path.glob("_vtk2d3plot_tmp_*"))
+    # Assert no scratch files or folders leaked (old and new naming)
+    tmp_files = list(tmp_path.glob("_vtk2d3plot_*"))
     assert not tmp_files, f"Leaked tmp files: {tmp_files}"
 
 
