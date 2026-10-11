@@ -369,7 +369,9 @@ def _build_shell_results(
             arr = _cell_array(state, "2DELEM_Stress_(membrane)")
             if arr is not None:
                 t_mem = arr[model.shell_src]
-                _tensor_to_voigt(t_mem, out=shell_stress[i, :, 0, :])
+                # A membrane value is constant through the thickness: copy it to
+                # every layer, like the membrane strain (suspicions S01).
+                shell_stress[i] = _tensor_to_voigt(t_mem)[:, None, :]
             else:
                 shell_stress_fill.append(i)
     elif has_shell_stress_upper_only:
@@ -409,7 +411,8 @@ def _build_shell_results(
             arr = _cell_array(state, "2DELEM_Von_Mises")
             if arr is not None:
                 vm = arr[model.shell_src]
-                shell_stress[i, :, 0, 0] = vm.astype(ftype)
+                # one value per element: every layer (suspicions S01)
+                shell_stress[i, :, :, 0] = vm.astype(ftype)[:, None]
             else:
                 shell_stress_fill.append(i)
     elif has_vonm and n_shells > 0:
@@ -419,73 +422,11 @@ def _build_shell_results(
             arr = _cell_array(state, "VONM")
             if arr is not None:
                 vonm = arr[model.shell_src]  # (n_shells,)
-                shell_stress[i, :, 0, 0] = vonm.astype(ftype)
+                # VONM is a max over layers, like EPSP, which is copied to every
+                # layer too (suspicions S01)
+                shell_stress[i, :, :, 0] = vonm.astype(ftype)[:, None]
             else:
                 shell_stress_fill.append(i)
-
-    # --rotate-shell-stress (bug report 2026-10-11 #1, #2): rotate the element-frame
-    # tensors with the OpenRadioss local frame rebuilt from each state's deformed
-    # coordinates. A synthetic-uniaxial tensor (VONM / 2DELEM_Von_Mises) has no
-    # element frame: rotating it would only invent components, so it is left alone.
-    shell_stress_is_tensor = (
-        has_shell_stress_2layer
-        or has_shell_stress_membrane
-        or has_shell_stress_upper_only
-        or has_shell_stress_lower_only
-    )
-    if shell_stress is not None and rotate_shell_stress and not shell_stress_is_tensor:
-        warn_list.append(
-            "rotate_shell_stress ignored: the shell stress is synthetic-uniaxial "
-            "(no element frame to rotate from)"
-        )
-    elif shell_stress is not None and rotate_shell_stress:
-        ever_degenerate = np.zeros(n_shells, dtype=bool)  # union over states
-        first_degenerate = None
-        for i, state in enumerate(series.states):
-            R = compute_shell_local_frames(state.points, model.shell_conn)
-            bad = degenerate_shell_frames(R)
-            if bad.any() and first_degenerate is None:
-                first_degenerate = i
-            ever_degenerate |= bad
-            shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
-        n_degenerate = int(ever_degenerate.sum())
-
-        # The source warning above says "element-local coordinates"; after the
-        # rotation that is no longer true, so reword exactly those phrases.
-        local_phrases = (
-            (
-                (
-                    "in element-local coordinates (from anim_to_vtk); von Mises / principal "
-                    "invariants are exact, but raw component values differ from global frame"
-                ),
-                "rotated from the element frame to the global frame",
-            ),
-            (
-                "element-local coordinates; von Mises / principal invariants are exact",
-                "rotated from the element frame to the global frame",
-            ),
-            (", element-local coordinates", ", rotated from the element frame to the global frame"),
-        )
-        for w_idx, w in enumerate(warn_list):
-            if w.startswith(("shell stress", "only 2DELEM_Stress_(")):
-                for old, new in local_phrases:
-                    w = w.replace(old, new)
-                warn_list[w_idx] = w
-        warn_list.append(
-            "shell stress rotated with the OpenRadioss local frame, rebuilt from each "
-            "state's deformed VTK coordinates (quads: CLSKEW3 symmetric frame of "
-            "r = x2+x3-x1-x4 and s = x3+x4-x1-x2; triangles: e1 along N1->N2); this assumes "
-            "QEPH/QBAT-type shells (a BT4 corotational frame differs) and the original node "
-            "order (anim_to_vtk-collapsed triangles list their nodes in ascending order); "
-            "accuracy is limited by the VTK coordinate print precision; shell strain, if "
-            "present, is not rotated"
-        )
-        if n_degenerate:
-            warn_list.append(
-                f"{n_degenerate} shells have a degenerate local frame (zero-area or collapsed "
-                f"geometry) in at least one state (first: state {first_degenerate}); their "
-                f"rotated shell stress is unreliable (zeroed or partly lost)"
-            )
 
     # ================================================================
     # === Shell internal energy (n_states, n_shells) ===
@@ -666,6 +607,24 @@ def _build_shell_results(
             else:
                 shell_strain_fill.append(i)
 
+    # --rotate-shell-stress: stress and strain share the per-state element frames.
+    shell_stress_is_tensor = (
+        has_shell_stress_2layer
+        or has_shell_stress_membrane
+        or has_shell_stress_upper_only
+        or has_shell_stress_lower_only
+    )
+    _rotate_shell_results(
+        series,
+        model,
+        n_shells,
+        warn_list,
+        rotate_shell_stress,
+        shell_stress,
+        shell_strain,
+        shell_stress_is_tensor,
+    )
+
     # ================================================================
     # === Shell thickness (n_states, n_shells) ===
     # ================================================================
@@ -682,6 +641,109 @@ def _build_shell_results(
 
 
     return shell_stress, shell_stress_fill, shell_eps, shell_eps_fill, shell_internal_energy, shell_internal_energy_fill, shell_strain, shell_strain_fill, shell_thickness, shell_thickness_fill
+
+
+# Element-frame wording of the shell source warnings and its rotated replacement.
+_ROTATED = "rotated from the element frame to the global frame"
+_STRESS_LOCAL_PHRASES = (
+    (
+        (
+            "in element-local coordinates (from anim_to_vtk); von Mises / principal "
+            "invariants are exact, but raw component values differ from global frame"
+        ),
+        _ROTATED,
+    ),
+    ("element-local coordinates; von Mises / principal invariants are exact", _ROTATED),
+    (", element-local coordinates", ", " + _ROTATED),
+)
+_STRAIN_LOCAL_PHRASE = (
+    "shell strain in element-local coordinates (from anim_to_vtk); principal invariants "
+    "are exact, but raw component values differ from global frame"
+)
+
+
+def _rotate_shell_results(
+    series,
+    model,
+    n_shells: int,
+    warn_list: list[str],
+    rotate_shell_stress: bool,
+    shell_stress,
+    shell_strain,
+    shell_stress_is_tensor: bool,
+) -> None:
+    """``rotate_shell_stress``: rotate shell stress AND strain to the global frame, in place.
+
+    Both are element-frame tensors in anim_to_vtk files and share the OpenRadioss
+    local frame rebuilt from each state's deformed coordinates (bug report
+    2026-10-11 #1, #2).  Rotating only the stress left the d3plot with mixed
+    frames (suspicions (b)).  The strain is rotated as a tensor, R eps R^T: the
+    anim_to_vtk shell strain off-diagonal is tensorial (the ANIM writer halves
+    the engineering shear, OpenRadioss tensorc.F), and it stays tensorial, as
+    the unrotated path writes it.  A synthetic-uniaxial stress (VONM /
+    2DELEM_Von_Mises) has no element frame: rotating it would only invent
+    components, so it is left alone.
+    """
+    if not rotate_shell_stress:
+        return
+    rotate_stress = shell_stress is not None and shell_stress_is_tensor
+    rotate_strain = shell_strain is not None
+    if shell_stress is not None and not shell_stress_is_tensor:
+        if rotate_strain:
+            warn_list.append(
+                "rotate_shell_stress: the shell stress is synthetic-uniaxial (no element frame "
+                "to rotate from) and is written unchanged; only the shell strain is rotated"
+            )
+        else:
+            warn_list.append(
+                "rotate_shell_stress ignored: the shell stress is synthetic-uniaxial "
+                "(no element frame to rotate from)"
+            )
+    if not (rotate_stress or rotate_strain):
+        return
+
+    ever_degenerate = np.zeros(n_shells, dtype=bool)  # union over states
+    first_degenerate = None
+    for i, state in enumerate(series.states):
+        R = compute_shell_local_frames(state.points, model.shell_conn)
+        bad = degenerate_shell_frames(R)
+        if bad.any() and first_degenerate is None:
+            first_degenerate = i
+        ever_degenerate |= bad
+        if rotate_stress:
+            shell_stress[i] = rotate_stress_to_global(shell_stress[i], R)
+        if rotate_strain:
+            shell_strain[i] = rotate_stress_to_global(shell_strain[i], R)
+    n_degenerate = int(ever_degenerate.sum())
+
+    # The source warnings say "element-local coordinates"; after the rotation
+    # that is no longer true, so reword exactly those phrases.
+    for w_idx, w in enumerate(warn_list):
+        if rotate_stress and w.startswith(("shell stress", "only 2DELEM_Stress_(")):
+            for old, new in _STRESS_LOCAL_PHRASES:
+                w = w.replace(old, new)
+        if rotate_strain:
+            w = w.replace(_STRAIN_LOCAL_PHRASE, "shell strain " + _ROTATED)
+        warn_list[w_idx] = w
+
+    what = " and ".join(n for n, on in (("stress", rotate_stress), ("strain", rotate_strain)) if on)
+    warn_list.append(
+        f"shell {what} rotated with the OpenRadioss local frame, rebuilt from each "
+        "state's deformed VTK coordinates (quads: CLSKEW3 symmetric frame of "
+        "r = x2+x3-x1-x4 and s = x3+x4-x1-x2; triangles: e1 along N1->N2); this assumes "
+        "QEPH/QBAT-type shells (a BT4 corotational frame differs) and the original node "
+        "order (anim_to_vtk-collapsed triangles list their nodes in ascending order); "
+        "accuracy is limited by the VTK coordinate print precision"
+        + ("; the strain is rotated as a tensor (shear stays tensorial)" if rotate_strain else "")
+    )
+    if n_degenerate:
+        verb = "are" if rotate_stress and rotate_strain else "is"
+        warn_list.append(
+            f"{n_degenerate} shells have a degenerate local frame (zero-area or collapsed "
+            f"geometry) in at least one state (first: state {first_degenerate}); their "
+            f"rotated shell {what} {verb} unreliable (zeroed or partly lost)"
+        )
+
 
 def build_d3plot(
     series: VtkSeries,
@@ -861,10 +923,43 @@ def build_d3plot(
         or (eps_layers > 0 and eps_layers != n_shell_layers)
         or (strain_layers > 0 and strain_layers != n_shell_layers)
     ):
+        # Say what happened to each family with fewer layers (suspicions S01). The
+        # branch order mirrors _build_shell_results. Strain always has 2 layers.
+        how = []
+        if 0 < stress_layers < n_shell_layers:
+            if has_shell_stress_membrane:
+                how.append("shell stress from 2DELEM_Stress_(membrane) copied to every layer")
+            elif has_shell_stress_upper_only:
+                how.append(
+                    f"shell stress from 2DELEM_Stress_(upper) in layer {min(1, n_shell_layers - 1)} "
+                    f"only, other layers zero"
+                )
+            elif has_shell_stress_lower_only:
+                how.append(
+                    "shell stress from 2DELEM_Stress_(lower) in layer 0 only, other layers zero"
+                )
+            else:
+                src = "2DELEM_Von_Mises" if has_shell_vonmises_official else "VONM"
+                how.append(f"shell stress from {src} copied to every layer")
+        if 0 < eps_layers < n_shell_layers:
+            if has_shell_eps_upper_only:
+                how.append(
+                    f"plastic strain from 2DELEM_Plastic_Strain_Upper in layer "
+                    f"{min(1, n_shell_layers - 1)} only, other layers zero"
+                )
+            elif has_shell_eps_lower_only:
+                how.append(
+                    "plastic strain from 2DELEM_Plastic_Strain_Lower in layer 0 only, "
+                    "other layers zero"
+                )
+            else:
+                src = "2DELEM_Plastic_Strain" if has_shell_eps_single else "EPSP"
+                how.append(f"plastic strain from {src} copied to every layer")
         warn_list.append(
             f"shell element results have differing integration layer counts "
             f"(stress={stress_layers}, eps={eps_layers}, strain={strain_layers}) "
             f"— reconciled to {n_shell_layers} layers (d3plot MAXINT constraint)"
+            + (": " + "; ".join(how) if how else "")
         )
 
 
