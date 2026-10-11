@@ -182,6 +182,7 @@ class WarningCode(str, Enum):
     CASE_COLLISION = "CASE_COLLISION"
     PART_NAMES_UNUSED = "PART_NAMES_UNUSED"
     PVD_TIME_OVERRIDE = "PVD_TIME_OVERRIDE"
+    IGNORED_INPUT_FILES = "IGNORED_INPUT_FILES"
     T01_GLOBALS = "T01_GLOBALS"
     OTHER = "OTHER"
 
@@ -243,6 +244,7 @@ _WARNING_TEMPLATES: list[tuple[re.Pattern[str], WarningCode]] = [
     (_t(r"part_names entries for part IDs not in the d3plot were ignored: "), WarningCode.PART_NAMES_UNUSED),
     # --- series inputs ----------------------------------------------------------
     (_t(r"PVD manifest timestep "), WarningCode.PVD_TIME_OVERRIDE),
+    (_t(r"Ignored \d+ file\(s\) in the input folder without the "), WarningCode.IGNORED_INPUT_FILES),
     (_t(r"T01 (?:file |CSV )"), WarningCode.T01_GLOBALS),
     (_t(r"global_total_energy = "), WarningCode.T01_GLOBALS),
 ]  # fmt: skip

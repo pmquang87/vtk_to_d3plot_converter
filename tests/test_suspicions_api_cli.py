@@ -523,6 +523,9 @@ TEMPLATE_SAMPLES = [
     ("T01 CSV has no data rows; global energies (internal, kinetic, total) not written", "T01_GLOBALS"),
     ("T01 CSV lacks the IE and/or KE column; global_total_energy not written", "T01_GLOBALS"),
     ("global_total_energy = IE+KE+HE+CE+DE from T01 (LS-DYNA convention: kinetic + internal + hourglass + contact + damping; EN numerical dissipation and EW external work excluded); T01 columns not written: none", "T01_GLOBALS"),
+    # merged from cluster B (S02, S06)
+    (f"T01 file {_ADV}T01.csv: 3 data row(s) superseded by later rows with an equal or earlier TIME (solver restart or duplicate output); the later rows are used", "T01_GLOBALS"),
+    (f"Ignored 2 file(s) in the input folder without the <stem>A<number>.vtk/.vtu state name: {_ADV}.vtk, b.vtu", "IGNORED_INPUT_FILES"),
 ]  # fmt: skip
 
 

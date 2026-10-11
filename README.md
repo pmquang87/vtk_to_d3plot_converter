@@ -111,7 +111,8 @@ it; a message that matches no template gets `OTHER`.
 | `TITLE_SANITIZED` | header title or a part title was transliterated, replaced or truncated |
 | `PART_NAMES_UNUSED` | part-name entries for part IDs that are not in the d3plot |
 | `PVD_TIME_OVERRIDE` | a `.pvd` timestep overrides the time stored in the file |
-| `T01_GLOBALS` | notes on the global energies from the `T01` CSV (composition, skipped rows, missing data) |
+| `IGNORED_INPUT_FILES` | a directory input held `.vtk/.vtu` files without the `<stem>A<number>` state name; they were not loaded |
+| `T01_GLOBALS` | notes on the global energies from the `T01` CSV (composition, skipped rows, superseded restart rows, missing data) |
 | `OTHER` | no template matched |
 
 A directory input loads its `<stem>A<number>.vtk/.vtu` files in state-number
