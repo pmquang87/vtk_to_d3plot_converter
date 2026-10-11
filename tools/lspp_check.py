@@ -113,6 +113,28 @@ def cfile_path(p: Path, enc: str, notes: list[str]) -> str:
     return replaced
 
 
+def header_wordsize(d3: Path) -> int | None:
+    """Word size (4 or 8) from the d3plot header, or None if it is not a d3plot.
+
+    Same rule as lasso 2.0.4 ``D3plotHeader._determine_file_settings``: header
+    word 11 is the file type (1 d3plot, 5 d3part, 11 d3eigv, +1000 allowed);
+    it is read as int32 at byte 44 (32-bit) or as int64 at byte 88 (64-bit).
+    """
+    import struct
+
+    try:
+        with open(d3, "rb") as f:
+            head = f.read(96)
+    except OSError:
+        return None
+    for ws, off, fmt in ((4, 44, "<i"), (8, 88, "<q")):
+        if len(head) >= off + ws:
+            (v,) = struct.unpack_from(fmt, head, off)
+            if (v - 1000 if v > 1000 else v) in (1, 5, 11):
+                return ws
+    return None
+
+
 def check_d3plot(
     d3plot_path: str | Path,
     *,
@@ -130,8 +152,17 @@ def check_d3plot(
     Returns dict with keys (the same keys on every return): loaded (bool),
     n_states (int|None), exit_code, wordsize (4|8|None), elapsed_s,
     msg (path of lspost.msg), cfile (path of the command file), path_notes
-    (how non-ASCII paths were written), detail (str). Raises RuntimeError if
-    LS-PrePost is not installed.
+    (how non-ASCII paths were written), notes (other caveats, e.g. a fringe
+    shown at state 1 because the state count could not be read), detail (str,
+    which repeats path_notes and notes). Raises RuntimeError if LS-PrePost is
+    not installed.
+
+    wordsize: LS-PrePost 4.13 prints " d3plot files are 64-bit ieee format"
+    (stdout) for a 64-bit family and NO word-size line for a 32-bit one
+    (checked 2026-10-11). So: 8 if LS-PrePost printed the 64-bit line; else,
+    when it loaded the model, the word size from the d3plot header
+    (``header_wordsize``); None if it did not load. A disagreement between
+    LS-PrePost and the header is added to ``notes``.
     """
     exe = find_lsprepost()
     if exe is None:
@@ -148,12 +179,14 @@ def check_d3plot(
             "msg": None,
             "cfile": None,
             "path_notes": [],
+            "notes": [],
             "detail": f"no such file: {d3}",
         }
 
     workdir = Path(tempfile.mkdtemp(prefix="lspp_check_"))
     enc = cfile_encoding()
     path_notes: list[str] = []
+    notes: list[str] = []
     lines = [f'open d3plot "{cfile_path(d3, enc, path_notes)}"', "ac"]
     if state is not None:
         # 1-based LS-PrePost state number; written with or without a fringe.
@@ -162,15 +195,24 @@ def check_d3plot(
         # No state given: fringe the last state. Resolve the state count from
         # the d3plot for a concrete state command ('state last;' is a silent
         # LS-PrePost no-op).
+        _n = None
         try:
             from lasso.dyna import ArrayType
             from lasso.dyna import D3plot as _D3plot
 
-            _dp = _D3plot(str(d3))
-            _ts = _dp.arrays.get(ArrayType.global_timesteps)
-            _n = len(_ts) if _ts is not None else 1
-        except Exception:  # noqa: BLE001
+            _ts = _D3plot(str(d3)).arrays.get(ArrayType.global_timesteps)
+            if _ts is not None and len(_ts) > 0:
+                _n = len(_ts)
+            else:
+                why = "lasso found no timesteps"
+        except Exception as exc:  # noqa: BLE001 - any read failure means "count unknown"
+            why = f"lasso could not read it: {type(exc).__name__}: {exc}"
+        if _n is None:
             _n = 1
+            notes.append(
+                f"state count of the d3plot unknown ({why}); fringe shown at state 1, "
+                "not the last state"
+            )
         lines.append(f"state {_n};")
     if fringe:
         lines += [
@@ -224,18 +266,33 @@ def check_d3plot(
     invalid = [ln for ln in blob.splitlines() if "Invalid command" in ln]
     loaded = returncode == 0 and finished and not invalid
 
+    hdr_ws = header_wordsize(d3)
+    if "64-bit ieee" in blob:
+        wordsize = 8
+        if hdr_ws is not None and hdr_ws != 8:
+            notes.append(f"LS-PrePost reported 64-bit, but the d3plot header says {hdr_ws * 8}-bit")
+    elif "32-bit ieee" in blob:  # not printed by LS-PrePost 4.13; kept for other versions
+        wordsize = 4
+    elif finished:
+        wordsize = hdr_ws
+        if hdr_ws == 8:
+            notes.append("d3plot header says 64-bit, but LS-PrePost printed no 64-bit line")
+    else:
+        wordsize = None
+
     detail = "ok" if loaded else f"finished={finished} invalid={invalid[:3]} rc={returncode}"
-    if path_notes:
-        detail += "; " + "; ".join(path_notes)
+    if path_notes or notes:
+        detail += "; " + "; ".join(path_notes + notes)
     return {
         "loaded": loaded,
         "n_states": n_states,
         "exit_code": returncode,
-        "wordsize": 8 if "64-bit ieee" in blob else (4 if "32-bit ieee" in blob else None),
+        "wordsize": wordsize,
         "elapsed_s": round(time.time() - t0, 1),
         "msg": str(msg_file),
         "cfile": str(cfile),
         "path_notes": path_notes,
+        "notes": notes,
         "detail": detail,
     }
 

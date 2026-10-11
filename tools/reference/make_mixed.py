@@ -1,13 +1,17 @@
-"""Harder case: solids + shells, 2 parts, non-contiguous node/element/part ids."""
+"""Harder case: solids + shells, 2 parts, non-contiguous node/element/part ids.
+
+Usage: make_mixed.py [output_folder]   (default: a fresh temporary folder)
+"""
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 import os
+import tempfile
 
 import numpy as np
 from lasso.dyna import ArrayType, D3plot
 
-OUT = r"C:\Users\pmqua\AppData\Local\Temp\claude\C--Users-pmqua-PycharmProjects-vtk-to-d3plot-converter\c8098c03-e5c4-4fd3-88be-7dd5ee73f96a\scratchpad\lasso_test\out2"
+OUT = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="make_mixed_")
 os.makedirs(OUT, exist_ok=True)
 PATH = os.path.join(OUT, "mixed.d3plot")
 
