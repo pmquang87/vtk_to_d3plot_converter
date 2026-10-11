@@ -1,15 +1,30 @@
+import math
 import re
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from .vtk_reader import VtkState, read_vtk
 
+# File extensions picked up in directory and stem mode, compared case-insensitively
+# (runA000.VTK and runA000.vtk are the same kind of file on every platform).
+_VTK_SUFFIXES = (".vtk", ".vtu")
 
-def parse_pvd(path: Path) -> list[tuple[float, Path]]:
+# Identity arrays: present in every state or in none, and equal in every state
+# (plan.md design decision 8).
+_IDENTITY_FIELDS = ("NODE_ID", "ELEMENT_ID", "PART_ID")
+
+
+def parse_pvd(path: Path) -> list[tuple[float | None, Path]]:
+    """Parse a ParaView ``.pvd`` collection into ``(timestep, file)`` entries.
+
+    A DataSet without a ``timestep`` attribute gets ``None`` (the file's own
+    time is then used). Entries are sorted by timestep when every entry has
+    one; otherwise the document order is kept.
+    """
     import xml.etree.ElementTree as ET
 
     tree = ET.parse(path)
@@ -21,10 +36,11 @@ def parse_pvd(path: Path) -> list[tuple[float, Path]]:
     if collection is None:
         raise ValueError("Missing Collection element")
 
-    entries = []
+    entries: list[tuple[float | None, Path]] = []
     parent_dir = path.parent
     for dataset in collection.findall("DataSet"):
-        ts = float(dataset.attrib.get("timestep", 0.0))
+        ts_attr = dataset.attrib.get("timestep")
+        ts = float(ts_attr) if ts_attr is not None else None
         file_name = dataset.attrib.get("file", "")
         # Resolve relative path
         if not Path(file_name).is_absolute():
@@ -32,7 +48,8 @@ def parse_pvd(path: Path) -> list[tuple[float, Path]]:
         else:
             vtu_path = Path(file_name)
         entries.append((ts, vtu_path))
-    entries.sort(key=lambda x: x[0])
+    if all(ts is not None for ts, _ in entries):
+        entries.sort(key=lambda x: x[0])
     return entries
 
 
@@ -48,6 +65,9 @@ class VtkSeries:
     dialect: str
     times: np.ndarray
     t01_data: T01Data | None = None
+    # Series-level notices for the ConversionReport (manifest time overrides,
+    # empty T01 file, ...), in the report's warning style.
+    warnings: list[str] = field(default_factory=list)
 
 
 class TopologyError(Exception):
@@ -69,6 +89,12 @@ def find_t01_csv(vtk_paths: list[Path]) -> Path | None:
 
 
 def parse_t01_csv(path: Path) -> T01Data:
+    """Parse a ``{run}T01.csv`` time-history file.
+
+    A file without data rows (only its comment and header lines, e.g. from a run
+    that stopped before its first time-history output) returns empty ``times``
+    and ``columns == {}``, so no global variable is resampled from it.
+    """
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
@@ -85,12 +111,12 @@ def parse_t01_csv(path: Path) -> T01Data:
             continue
         data.append([float(x) for x in line.split(",")])
 
-    if not data:
-        data = np.empty((0, len(headers)))
-    else:
-        data = np.array(data)
     if "TIME" not in headers:
         raise ValueError("TIME column missing from T01 CSV")
+
+    if not data:
+        return T01Data(times=np.array([]), columns={})
+    data = np.array(data)
 
     time_idx = headers.index("TIME")
     times = data[:, time_idx]
@@ -103,37 +129,158 @@ def parse_t01_csv(path: Path) -> T01Data:
     return T01Data(times=times, columns=columns)
 
 
-def load_series(
-    inputs: str | Path | Sequence[str | Path], progress_cb: Callable[[int, int], None] | None = None
-) -> VtkSeries:
+# ── shared helpers for load_series / load_series_lazy ───────────────────────
+
+
+def _list_vtk_files(folder: Path) -> list[Path]:
+    """All .vtk/.vtu files in *folder*, extension compared case-insensitively."""
+    return [f for f in folder.iterdir() if f.suffix.lower() in _VTK_SUFFIXES and f.is_file()]
+
+
+def _resolve_inputs(
+    inputs: str | Path | Sequence[str | Path],
+) -> tuple[list[Path], list[float | None] | None]:
+    """Turn the user's input into an ordered file list.
+
+    Returns ``(paths, manifest_times)``; ``manifest_times`` is the per-file
+    PVD timestep list for ``.pvd`` input and ``None`` otherwise.
+    """
+    manifest_times: list[float | None] | None = None
     if isinstance(inputs, (str, Path)):
         path = Path(inputs)
         if path.suffix.lower() == ".pvd":
             pvd_entries = parse_pvd(path)
             paths = [e[1] for e in pvd_entries]
+            manifest_times = [e[0] for e in pvd_entries]
         elif path.is_dir():
-            files = list(path.glob("*.vtk")) + list(path.glob("*.vtu"))
-            paths = _sort_and_filter_files(files)
-        elif path.suffix.lower() in (".vtk", ".vtu"):
+            paths = _sort_and_filter_files(_list_vtk_files(path))
+        elif path.suffix.lower() in _VTK_SUFFIXES:
             paths = [path]
         else:
-            # Stem form
+            # Stem form: "<folder>/<stem>" means "<folder>/<stem>A<n>.vtk|vtu".
+            # A bare stem ("run") has parent "." and so means ./runA*.vtk.
             parent = path.parent
             stem = path.name
-            if not parent.exists() and not path.is_absolute():
-                parent = Path(".")
-
+            if not parent.is_dir():
+                raise FileNotFoundError(
+                    f"Folder '{parent}' of the stem input '{inputs}' does not exist"
+                )
             pattern = re.compile(re.escape(stem) + r"A\d+\.(vtk|vtu)$", re.IGNORECASE)
-            files = [f for f in parent.glob("*.vtk")] + [f for f in parent.glob("*.vtu")]
-            files = [f for f in files if pattern.match(f.name)]
+            files = [f for f in _list_vtk_files(parent) if pattern.match(f.name)]
             paths = _sort_and_filter_files(files)
     elif isinstance(inputs, Sequence):
+        # Explicit list: caller order is kept (plan.md design decision 9).
         paths = [Path(p) for p in inputs]
     else:
         raise TypeError(f"Invalid inputs type: {type(inputs)}")
 
     if not paths:
         raise ValueError("No files found to load.")
+    return paths, manifest_times
+
+
+def _times_agree(a: float, b: float) -> bool:
+    # official-dialect TIME is printed with 6 significant digits
+    return math.isclose(a, b, rel_tol=1e-5, abs_tol=1e-12)
+
+
+def _resolve_time(
+    own_time: float | None,
+    manifest_time: float | None,
+    fname: str,
+    warn_list: list[str],
+) -> float:
+    """State time: the PVD manifest timestep when there is one, else the file's own.
+
+    The manifest wins on disagreement, as in VTK's/ParaView's PVD reader, which
+    takes the DataSet ``timestep`` attribute and ignores times stored in the
+    data files: the manifest is the series index its writer built for exactly
+    this purpose. The override is reported, never silent.
+    """
+    if manifest_time is None:
+        if own_time is None:
+            raise ValueError(f"Time is None for file {fname}")
+        return own_time
+    if own_time is not None and not _times_agree(own_time, manifest_time):
+        warn_list.append(
+            f"PVD manifest timestep {manifest_time!r} used for {fname}; "
+            f"it overrides the file's own time {own_time!r}"
+        )
+    return manifest_time
+
+
+def _check_times(times: np.ndarray, filenames: list[str]) -> None:
+    diffs = np.diff(times)
+    # ~(d > 0) also catches NaN differences, which (d <= 0) misses
+    bad = np.flatnonzero(~(diffs > 0))
+    if bad.size:
+        idx = int(bad[0])
+        raise ValueError(
+            f"Times are not strictly increasing (non-monotonic order): file {filenames[idx]} (time {times[idx]}) "
+            f"is followed by file {filenames[idx + 1]} (time {times[idx + 1]}). "
+            f"Decreasing or duplicate time."
+        )
+
+
+def _check_topology(state0: VtkState, state: VtkState, fname: str) -> None:
+    if len(state.points) != len(state0.points):
+        raise TopologyError(f"Points count mismatch in {fname}")
+    if not np.array_equal(state.cell_types, state0.cell_types):
+        raise TopologyError(f"cell_types mismatch in {fname}")
+    if not np.array_equal(state.cell_connectivity, state0.cell_connectivity):
+        raise TopologyError(f"cell_connectivity mismatch in {fname}")
+    if not np.array_equal(state.cell_offsets, state0.cell_offsets):
+        raise TopologyError(f"cell_offsets mismatch in {fname}")
+
+
+def _check_identity(state0: VtkState, state: VtkState, fname0: str, fname: str) -> None:
+    """NODE_ID / ELEMENT_ID / PART_ID: in all states or in none, and equal.
+
+    Called for every state against state 0; presence must match state 0, so an
+    array missing from state 0 must be missing everywhere, and equality with
+    state 0 makes every pair of states equal.
+    """
+    for kind in ("point_data", "cell_data"):
+        d0 = getattr(state0, kind, {})
+        d = getattr(state, kind, {})
+        for name in _IDENTITY_FIELDS:
+            in0, inn = name in d0, name in d
+            if in0 and not inn:
+                raise TopologyError(f"{kind} {name} present in {fname0} but missing in {fname}")
+            if inn and not in0:
+                raise TopologyError(f"{kind} {name} missing in {fname0} but present in {fname}")
+            if in0 and not np.array_equal(d0[name], d[name]):
+                raise TopologyError(f"{kind} {name} mismatch in {fname} (differs from {fname0})")
+
+
+def _detect_dialect(state0: VtkState, own_time0: float | None) -> str:
+    # own_time0 is the file's own time, before any PVD manifest override:
+    # dialect is provenance of the file content.
+    title0 = getattr(state0, "title", "")
+    if re.search(r"pyradioss", title0, re.IGNORECASE):
+        return "port"
+    if own_time0 is not None:
+        return "official"
+    return "unknown"
+
+
+def _load_t01(paths: list[Path], warn_list: list[str]) -> T01Data | None:
+    t01_path = find_t01_csv(paths)
+    if t01_path is None:
+        return None
+    t01 = parse_t01_csv(t01_path)
+    if t01.times.size == 0:
+        warn_list.append(
+            f"T01 file {t01_path.name} has no data rows; "
+            f"global energies from it (IE, KE, EN) are not written"
+        )
+    return t01
+
+
+def load_series(
+    inputs: str | Path | Sequence[str | Path], progress_cb: Callable[[int, int], None] | None = None
+) -> VtkSeries:
+    paths, manifest_times = _resolve_inputs(inputs)
 
     states = []
     total = len(paths)
@@ -143,68 +290,31 @@ def load_series(
         states.append(read_vtk(p))
 
     filenames = [p.name for p in paths]
+    warn_list: list[str] = []
 
+    own_time0 = getattr(states[0], "time", None)
     times_list = []
     for i, state in enumerate(states):
-        if getattr(state, "time", None) is None:
-            raise ValueError(f"Time is None for file {filenames[i]}")
-        times_list.append(state.time)
+        mt = manifest_times[i] if manifest_times is not None else None
+        t = _resolve_time(getattr(state, "time", None), mt, filenames[i], warn_list)
+        state.time = t
+        times_list.append(t)
 
     times = np.array(times_list, dtype=np.float64)
-
-    diffs = np.diff(times)
-    if not np.all(diffs > 0):
-        idx = np.where(diffs <= 0)[0][0]
-        raise ValueError(
-            f"Times are not strictly increasing (non-monotonic order): file {filenames[idx]} (time {times[idx]}) "
-            f"is followed by file {filenames[idx + 1]} (time {times[idx + 1]}). "
-            f"Decreasing or duplicate time."
-        )
+    _check_times(times, filenames)
 
     state0 = states[0]
-    title0 = getattr(state0, "title", "")
-    if re.search(r"pyradioss", title0, re.IGNORECASE):
-        dialect = "port"
-    elif getattr(state0, "time", None) is not None:
-        dialect = "official"
-    else:
-        dialect = "unknown"
+    dialect = _detect_dialect(state0, own_time0)
 
     for i in range(1, len(states)):
-        state = states[i]
-        fname = filenames[i]
+        _check_topology(state0, states[i], filenames[i])
+        _check_identity(state0, states[i], filenames[0], filenames[i])
 
-        if len(state.points) != len(state0.points):
-            raise TopologyError(f"Points count mismatch in {fname}")
+    t01_data = _load_t01(paths, warn_list)
 
-        if not np.array_equal(state.cell_types, state0.cell_types):
-            raise TopologyError(f"cell_types mismatch in {fname}")
-
-        if not np.array_equal(state.cell_connectivity, state0.cell_connectivity):
-            raise TopologyError(f"cell_connectivity mismatch in {fname}")
-
-        if not np.array_equal(state.cell_offsets, state0.cell_offsets):
-            raise TopologyError(f"cell_offsets mismatch in {fname}")
-
-        for field in ["NODE_ID", "ELEMENT_ID", "PART_ID"]:
-            pd0 = getattr(state0, "point_data", {})
-            pd_curr = getattr(state, "point_data", {})
-            if field in pd0 and (
-                field not in pd_curr or not np.array_equal(pd0[field], pd_curr[field])
-            ):
-                raise TopologyError(f"point_data {field} mismatch in {fname}")
-
-            cd0 = getattr(state0, "cell_data", {})
-            cd_curr = getattr(state, "cell_data", {})
-            if field in cd0 and (
-                field not in cd_curr or not np.array_equal(cd0[field], cd_curr[field])
-            ):
-                raise TopologyError(f"cell_data {field} mismatch in {fname}")
-
-    t01_path = find_t01_csv(paths)
-    t01_data = parse_t01_csv(t01_path) if t01_path else None
-
-    return VtkSeries(states=states, dialect=dialect, times=times, t01_data=t01_data)
+    return VtkSeries(
+        states=states, dialect=dialect, times=times, t01_data=t01_data, warnings=warn_list
+    )
 
 
 def _sort_and_filter_files(files: list[Path]) -> list[Path]:
@@ -251,6 +361,7 @@ class LazyVtkSeries:
     times: np.ndarray
     _array_keys_cache: dict[str, set[str]] | None = None
     t01_data: T01Data | None = None
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def n_states(self) -> int:
@@ -260,12 +371,18 @@ class LazyVtkSeries:
         self,
         progress_cb: Callable[[int, int], None] | None = None,
     ):
-        """Yield (index, VtkState) for each state, loading lazily."""
+        """Yield (index, VtkState) for each state, loading lazily.
+
+        Each state carries the series time (``self.times[i]``), which for PVD
+        input is the manifest timestep.
+        """
         total = len(self.paths)
         for i, p in enumerate(self.paths):
             if progress_cb:
                 progress_cb(i, total)
-            yield i, read_vtk(p)
+            state = read_vtk(p)
+            state.time = float(self.times[i])
+            yield i, state
 
     def detect_array_keys(self) -> dict[str, set[str]]:
         """Scan all states to build union of cell_data and point_data keys.
@@ -294,81 +411,41 @@ def load_series_lazy(
     The returned ``LazyVtkSeries`` can iterate over states one at a time
     via :meth:`~LazyVtkSeries.iter_states`, keeping memory usage constant.
     """
-    if isinstance(inputs, (str, Path)):
-        path = Path(inputs)
-        if path.suffix.lower() == ".pvd":
-            pvd_entries = parse_pvd(path)
-            paths = [e[1] for e in pvd_entries]
-        elif path.is_dir():
-            files = list(path.glob("*.vtk")) + list(path.glob("*.vtu"))
-            paths = _sort_and_filter_files(files)
-        elif path.suffix.lower() in (".vtk", ".vtu"):
-            paths = [path]
-        else:
-            parent = path.parent
-            stem = path.name
-            if not parent.exists() and not path.is_absolute():
-                parent = Path(".")
-            pattern = re.compile(re.escape(stem) + r"A\d+\.(vtk|vtu)$", re.IGNORECASE)
-            files = [f for f in parent.glob("*.vtk")] + [f for f in parent.glob("*.vtu")]
-            files = [f for f in files if pattern.match(f.name)]
-            paths = _sort_and_filter_files(files)
-    elif isinstance(inputs, Sequence):
-        paths = [Path(p) for p in inputs]
-    else:
-        raise TypeError(f"Invalid inputs type: {type(inputs)}")
-
-    if not paths:
-        raise ValueError("No files found to load.")
+    paths, manifest_times = _resolve_inputs(inputs)
 
     # Read all states just for metadata (times, topology check), then discard
     filenames = [p.name for p in paths]
-    states_meta: list[tuple[float, int]] = []  # (time, n_points)
+    warn_list: list[str] = []
+    times_list: list[float] = []
+
+    def manifest_time(i: int) -> float | None:
+        return manifest_times[i] if manifest_times is not None else None
 
     state0 = read_vtk(paths[0])
     if progress_cb:
         progress_cb(0, len(paths))
-    if state0.time is None:
-        raise ValueError(f"Time is None for file {filenames[0]}")
-    states_meta.append((state0.time, len(state0.points)))
+    own_time0 = state0.time
+    state0.time = _resolve_time(own_time0, manifest_time(0), filenames[0], warn_list)
+    times_list.append(state0.time)
 
     for i in range(1, len(paths)):
         if progress_cb:
             progress_cb(i, len(paths))
         state = read_vtk(paths[i], metadata_only=True)
         fname = filenames[i]
-        if state.time is None:
-            raise ValueError(f"Time is None for file {fname}")
-        if len(state.points) != len(state0.points):
-            raise TopologyError(f"Points count mismatch in {fname}")
-        if not np.array_equal(state.cell_types, state0.cell_types):
-            raise TopologyError(f"cell_types mismatch in {fname}")
-        if not np.array_equal(state.cell_connectivity, state0.cell_connectivity):
-            raise TopologyError(f"cell_connectivity mismatch in {fname}")
-        if not np.array_equal(state.cell_offsets, state0.cell_offsets):
-            raise TopologyError(f"cell_offsets mismatch in {fname}")
-        states_meta.append((state.time, len(state.points)))
+        times_list.append(_resolve_time(state.time, manifest_time(i), fname, warn_list))
+        _check_topology(state0, state, fname)
+        # Identity arrays (bug report 2026-10-11 #33, c34) are not compared here
+        # yet: metadata_only reading drops NODE_ID/ELEMENT_ID/PART_ID. Once the
+        # reader keeps them in metadata mode, add
+        #     _check_identity(state0, state, filenames[0], fname)
         # State is discarded here — only metadata kept
 
-    times = np.array([t for t, _ in states_meta], dtype=np.float64)
-    diffs = np.diff(times)
-    if not np.all(diffs > 0):
-        idx = int(np.where(diffs <= 0)[0][0])
-        raise ValueError(
-            f"Times are not strictly increasing: file {filenames[idx]} (time {times[idx]}) "
-            f"is followed by file {filenames[idx + 1]} (time {times[idx + 1]})"
-        )
+    times = np.array(times_list, dtype=np.float64)
+    _check_times(times, filenames)
 
-    title0 = getattr(state0, "title", "")
-    if re.search(r"pyradioss", title0, re.IGNORECASE):
-        dialect = "port"
-    elif state0.time is not None:
-        dialect = "official"
-    else:
-        dialect = "unknown"
-
-    t01_path = find_t01_csv(paths)
-    t01_data = parse_t01_csv(t01_path) if t01_path else None
+    dialect = _detect_dialect(state0, own_time0)
+    t01_data = _load_t01(paths, warn_list)
 
     return LazyVtkSeries(
         state0=state0,
@@ -376,4 +453,5 @@ def load_series_lazy(
         dialect=dialect,
         times=times,
         t01_data=t01_data,
+        warnings=warn_list,
     )
