@@ -8,30 +8,21 @@ def test_compute_shell_local_frames_identity():
     # 3 -- 2 (1,1,0)
     # |    |
     # 0 -- 1 (1,0,0)
-    # diagonal 0->2 is (1,1,0). Normalized e1 = (1/sqrt(2), 1/sqrt(2), 0)
-    # Wait, the convention is:
-    # N1, N2, N3, N4
-    # e1 = normalize(N3-N1)
-    # e2_raw = N4-N2
-    # e3 = normalize(cross(e1, e2_raw))
-    # e2 = cross(e3, e1)
+    # OpenRadioss CLSKEW3 symmetric frame (bug report 2026-10-11 #1 / c06;
+    # the old expectation pinned the wrong diagonal frame e1 = unit(N3-N1)):
+    # r = N2+N3-N1-N4 = [2, 0, 0], s = N3+N4-N1-N2 = [0, 2, 0]
+    # e3 = unit(r x s) = [0, 0, 1]
+    # e1 = unit(r*|s|/|r| + s x e3) = unit([2, 0, 0] + [2, 0, 0]) = [1, 0, 0]
+    # e2 = e3 x e1 = [0, 1, 0]
     points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
     shell_conn = np.array([[0, 1, 2, 3]])
 
     R = compute_shell_local_frames(points, shell_conn)
     assert R.shape == (1, 3, 3)
 
-    # N3-N1 = [1, 1, 0]
-    # e1 = [1/sqrt(2), 1/sqrt(2), 0]
-    e1_exp = np.array([1 / np.sqrt(2), 1 / np.sqrt(2), 0])
-
-    # N4-N2 = [-1, 1, 0]
-    # cross(e1, e2_raw) = cross([1, 1, 0], [-1, 1, 0]) -> [0, 0, 2]
-    # e3 = [0, 0, 1]
+    e1_exp = np.array([1.0, 0.0, 0.0])
     e3_exp = np.array([0.0, 0.0, 1.0])
-
-    # e2 = cross(e3, e1) = [-1/sqrt(2), 1/sqrt(2), 0]
-    e2_exp = np.array([-1 / np.sqrt(2), 1 / np.sqrt(2), 0])
+    e2_exp = np.array([0.0, 1.0, 0.0])
 
     np.testing.assert_allclose(R[0, :, 0], e1_exp)
     np.testing.assert_allclose(R[0, :, 1], e2_exp)
@@ -42,7 +33,7 @@ def test_rotate_stress_to_global_identity():
     # If R is identity, stress should not change
     R = np.eye(3)[np.newaxis, ...]
 
-    # voigt [xx, yy, zz, xy, xz, yz]
+    # voigt in d3plot order [xx, yy, zz, xy, yz, zx]
     local_stress = np.array([[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]])
     global_stress = rotate_stress_to_global(local_stress, R)
 
