@@ -46,13 +46,16 @@ def _write_family(d3, out: Path) -> list[Path]:
     overwritten or deleted (bug report 2026-10-11, suspicion S14).
 
     On any failure every final file this run created is removed and the old
-    family members are moved back, whether or not there were any (S11). A
-    backup that cannot be moved back stays in the private folder, and the
-    exception gets a note naming it. Returns the final files written.
+    family members are moved back, whether or not there were any (S11); output
+    folders this run created are removed again when they are empty. A backup
+    that cannot be moved back stays in the private folder, and a new file that
+    cannot be removed stays where it is; the exception gets a note naming them.
+    Returns the final files written.
     """
     import shutil
     import tempfile
 
+    made_dirs = [p for p in (out.parent, *out.parent.parents) if not p.exists()]
     out.parent.mkdir(parents=True, exist_ok=True)
     in_family = _family_matcher(out.name)
     pre_existing = [f for f in out.parent.iterdir() if f.is_file() and in_family(f.name)]
@@ -89,12 +92,18 @@ def _write_family(d3, out: Path) -> list[Path]:
             created.append(target)
             shutil.move(str(f), str(target))
     except BaseException as exc:
+        stuck = []
         for target in created:
             try:
                 if target.is_file():
                     target.unlink()
             except OSError:
-                pass
+                stuck.append(str(target))
+        if stuck:
+            exc.add_note(
+                f"vtk2d3plot: {len(stuck)} new d3plot family file(s) could not be removed: "
+                f"{', '.join(stuck)}"
+            )
         lost = []
         for orig, bak in backups:
             try:
@@ -107,11 +116,37 @@ def _write_family(d3, out: Path) -> list[Path]:
                 f"vtk2d3plot: {len(lost)} file(s) of the previous d3plot family could not "
                 f"be moved back and are kept in {old_dir}: {', '.join(lost)}"
             )
+        else:
+            _remove_tree(work)
+            for d in made_dirs:  # deepest first; only while empty
+                try:
+                    d.rmdir()
+                except OSError:
+                    break
         raise
     finally:
         if not keep_work:
-            shutil.rmtree(work, ignore_errors=True)
+            _remove_tree(work)
     return created
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove *path* recursively, also read-only files (a read-only old family
+    member ends up in the backup folder); never raises."""
+    import shutil
+    import stat
+
+    def clear_readonly(func, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onexc=clear_readonly)
+    except OSError:
+        pass
 
 
 class WarningCode(str, Enum):

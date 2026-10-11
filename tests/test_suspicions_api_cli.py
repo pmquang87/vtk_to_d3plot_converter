@@ -186,6 +186,131 @@ def test_s11_failed_move_restores_old_family(tmp_path, monkeypatch):
     assert _snapshot(out_dir) == before
 
 
+def test_s11_failure_while_backing_up_restores_everything(tmp_path, monkeypatch):
+    """S11: a move of an OLD family file into the backup folder fails (2nd one)."""
+    from vtk2d3plot import convert
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    for name in ("box.d3plot", "box.d3plot01", "box.d3plot02"):
+        (out_dir / name).write_bytes(f"old {name}".encode())
+    before = _snapshot(out_dir)
+    real_move = shutil.move
+    calls = []
+
+    def fake_move(src, dst, *args, **kwargs):
+        if Path(src).parent == out_dir:  # an old member leaving the output folder
+            calls.append(src)
+            if len(calls) == 2:
+                raise OSError("injected failure while backing up")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "move", fake_move)
+    with pytest.raises(OSError, match="injected failure"):
+        convert(PORT_DIR, out_dir / "box.d3plot")
+    assert _snapshot(out_dir) == before
+
+
+def test_s11_failure_inside_writer_changes_nothing(tmp_path, monkeypatch):
+    """S11: lasso fails while writing; the old family and the folder are untouched,
+    and an output folder this run created is removed again."""
+    from lasso.dyna import D3plot
+
+    from vtk2d3plot import convert
+
+    def broken_write(self, *args, **kwargs):
+        raise RuntimeError("injected writer failure")
+
+    monkeypatch.setattr(D3plot, "write_d3plot", broken_write)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "box.d3plot").write_bytes(b"old geometry")
+    before = _snapshot(tmp_path)
+    with pytest.raises(RuntimeError, match="injected writer failure"):
+        convert(PORT_DIR, out_dir / "box.d3plot")
+    with pytest.raises(RuntimeError, match="injected writer failure"):
+        convert(PORT_DIR, tmp_path / "new1" / "new2" / "box.d3plot")
+    assert _snapshot(tmp_path) == before
+
+
+def test_s11_restore_failure_keeps_backup_and_says_where(tmp_path, monkeypatch):
+    """S11: when an old family file cannot be moved back, it stays in the private
+    folder (byte-identical) and the exception names that folder and file."""
+    from vtk2d3plot import convert
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    old = {n: f"old {n}".encode() for n in ("box.d3plot", "box.d3plot01", "box.d3plot02")}
+    for name, data in old.items():
+        (out_dir / name).write_bytes(data)
+    real_move = shutil.move
+
+    def fake_move(src, dst, *args, **kwargs):
+        s, d = Path(src), Path(dst)
+        if d.parent == out_dir and d.name == f"box.d3plot{N_PORT}":
+            raise OSError("injected failure moving onto the last state file")
+        if d == out_dir / "box.d3plot01" and s.parent.name == "old":
+            raise OSError("injected failure moving the backup back")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "move", fake_move)
+    with pytest.raises(OSError, match="last state file") as info:
+        convert(PORT_DIR, out_dir / "box.d3plot")
+
+    kept = [p for p in out_dir.iterdir() if p.is_dir()]
+    assert len(kept) == 1 and kept[0].name.startswith("_vtk2d3plot_"), kept
+    assert (kept[0] / "old" / "box.d3plot01").read_bytes() == old["box.d3plot01"]
+    notes = " ".join(getattr(info.value, "__notes__", []))
+    assert str(kept[0] / "old") in notes and "box.d3plot01" in notes, notes
+    files = sorted(p.name for p in out_dir.iterdir() if p.is_file())
+    assert files == ["box.d3plot", "box.d3plot02"]
+    assert all((out_dir / n).read_bytes() == old[n] for n in files)
+
+
+def test_s11_unremovable_new_file_is_named(tmp_path, monkeypatch):
+    """S11: a new family file that cannot be removed during the roll-back is named
+    in an exception note (nothing is left behind silently)."""
+    from vtk2d3plot import convert
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _fail_move_to(monkeypatch, "box.d3plot03")
+    real_unlink = Path.unlink
+
+    def fake_unlink(self, *args, **kwargs):
+        if self.name == "box.d3plot01":
+            raise PermissionError("injected: file is locked")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    with pytest.raises(OSError, match="injected failure") as info:
+        convert(PORT_DIR, out_dir / "box.d3plot")
+    notes = " ".join(getattr(info.value, "__notes__", []))
+    assert str(out_dir / "box.d3plot01") in notes, notes
+    assert sorted(p.name for p in out_dir.iterdir()) == ["box.d3plot01"]
+
+
+def test_s11_read_only_old_member_leaves_no_scratch(tmp_path):
+    """S11/S14: a read-only old family member is replaced and the private scratch
+    folder is still removed after a successful run."""
+    import stat
+
+    from vtk2d3plot import convert
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    stale = out_dir / "box.d3plot30"
+    stale.write_bytes(b"old read-only state")
+    stale.chmod(stat.S_IREAD)
+    try:
+        convert(PORT_DIR, out_dir / "box.d3plot")
+        family = ["box.d3plot"] + [f"box.d3plot{i:02d}" for i in range(1, N_PORT + 1)]
+        assert sorted(p.name for p in out_dir.iterdir()) == family
+    finally:
+        for p in out_dir.rglob("*"):
+            p.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
 # ======================================================================
 # S14: backups must never use a name that can be a user's file
 # ======================================================================

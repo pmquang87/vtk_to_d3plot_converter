@@ -71,7 +71,9 @@ The family is replaced via one private scratch folder `_vtk2d3plot_<random>`
 next to the output, which is removed afterwards; no other file name is used,
 so files that are not family members (such as `model.d3plot.bak`) are never
 touched. If the conversion fails while the files are moved, no new family file
-is left behind and the previous family is restored.
+is left behind and the previous family is restored. A file that cannot be
+removed or moved back (locked, for example) is named in the error message; an
+old family file that cannot be moved back stays in the scratch folder.
 
 `convert(..., progress=callback)` calls `callback(i, n)` once per state while
 the states are loaded; the CLI prints it as `Processing state i/n...`.
