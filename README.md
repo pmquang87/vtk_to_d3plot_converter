@@ -71,3 +71,15 @@ same as for a directory input.
 Golden test data in `tests/data/`: matched ANIM+VTK+d3plot triples generated
 from real OpenRadioss runs (see `docs/research/local-verification-report.md`
 for how they were made and verified).
+
+Checksums of the golden data are in `tests/data/golden/MANIFEST.sha256`.
+`tools\golden_manifest.py` hashes text fixtures with CRLF normalised to LF, so
+the manifest verifies on LF and CRLF checkouts; files missing from the
+manifest make `verify` fail. After any fixture change run
+`.venv\Scripts\python.exe tools\golden_manifest.py generate` (options:
+`--root <data dir>`, `--manifest <file>`).
+
+The reference verifiers `tools\reference\verify_byid.py` and `verify_zug.py`
+pair VTK files with d3plot states in the converter's numeric `A<number>` order,
+renumber zero NODE_IDs like the converter, and exit with code 2 on a count,
+state-time or NODE_ID mismatch.

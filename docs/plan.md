@@ -47,6 +47,17 @@ instead of no-op `state last;`), is_alive warning names actual source array,
 ever_alive computed only over present states, solid strain mapping
 (3DELEM_Strain recognition), test hardening with value pins.
 
+[x] **Milestone 13: External bug report 2026-10-11 (40 bugs, c01..c43)**  
+Contract: `docs/reviews/2026-10-11-external-bug-report.md`. All 40 fixed with
+failing-first tests in `tests/test_bugreport_*.py` (marker `bugreport`). Highlights:
+shell rotation uses the OpenRadioss CLSKEW3 frame and d3plot slot order (#1, #2);
+total energy = IE+KE+HE+CE+DE, not EN (#3); wedge mapping restored (#4);
+case-insensitive gathers (#5); lasso layout fills for ISTRN/IOSHL2 (#7, #8, #26);
+sanitised part titles (#9); VTU compression / appended base64 / multi-piece /
+Int16, PVD times, legacy FIELD-in-data (#13-#18); lazy-loader ID check (#33);
+golden manifest line-ending independent (#21); one d3plot file per state is
+documented, not changed (#37, keeps commit 2aa270f).
+
 **Goal:** A Python package `vtk2d3plot` that converts a time series of legacy
 ASCII VTK unstructured-grid files (one file per output state, as written by
 pyradioss or by OpenRadioss `anim_to_vtk`) into an LS-DYNA d3plot family that
@@ -74,9 +85,10 @@ correctly — proven by `tools/reference/make_d3plot.py` and `make_mixed.py`
 - Dependencies are preinstalled. No `pip install` without explicit user approval.
 - `lasso-python==2.0.4` is the writer. Pin it. Its API quirks are load-bearing:
   - `ArrayType.node_displacement` = **absolute deformed coordinates** per state, NOT deltas.
-  - `part_titles` must be a numpy array of **bytes** (`np.array([b"NAME"])`); str raises AttributeError. `part_titles` and `part_titles_ids` must both be present or both absent.
+  - `part_titles` must be a numpy array of **bytes** (`np.array([b"NAME"])`); str raises AttributeError. `part_titles` and `part_titles_ids` must both be present or both absent. Part titles are a fixed 72-byte field (18*4 bytes for every wordsize) that lasso pads BEFORE UTF-8 encoding, so a multi-byte character shifts every later record; names are sanitised to ASCII by `_sanitize_title(wordsize=8)` (bug report 2026-10-11 #9).
   - Solids: exactly **1 or 8** integration layers. We always use 1.
-  - Default `write_d3plot(path)` writes TWO files: `<path>` (geometry) + `<path>01` (states). Both are the deliverable; copy/ship them together.
+  - The converter calls `write_d3plot(path, single_file=False)`, which writes `<path>` (geometry) plus one state file per state `<path>01`, `<path>02`, ... (N states -> N+1 files, commit 2aa270f). All of them are the deliverable; `ConversionReport.output_files` lists them. (Plain `write_d3plot(path)` would write a 2-file family.)
+  - ISTRN is ONE global flag: if any family carries strain, every present family needs its strain array (solids 6 words at the end of NEIPH, shells 12 words), and solids with any state data need `element_solid_effective_plastic_strain` (lasso always writes the 7 basic solid words, but IOSHL2 is only set when the array exists). The builder zero-fills these with warnings (bug report 2026-10-11 #7, #8, #26).
   - `element_solid_effective_plastic_strain` real shape is `(n_states, n_solids, n_layers)` — the docstring in `array_type.py` is wrong (says layers before solids). Trust `d3plot.py:3431`, not the docstring.
   - 64-bit output needs `header.itype=np.int64`, `header.ftype=np.float64` AND `header.wordsize=8` — all three, or the file is silently corrupt. Default output is 32-bit; cast all float arrays to `np.float32`, ids to `np.int32`.
 - Element blocks in d3plot are segregated by type (solids, then beams, then shells). VTK interleaves them. All splitting/mapping lives in `mapping.py` only.
@@ -190,17 +202,17 @@ d3plot identifies shape by repeated-node patterns in fixed-width connectivity.
 |---|---|---|---|
 | 12 HEXAHEDRON | solid | `[0,1,2,3,4,5,6,7]` | verified (golden W3 solids) |
 | 10 TETRA | solid | `[0,1,2,3,3,3,3,3]` | standard LS-DYNA degenerate tetra |
-| 13 WEDGE | solid | `[0,1,4,3,2,2,5,5]` | verified (M2 LS-PrePost render, 2026-08-02: clean prism, no twist) |
+| 13 WEDGE | solid | `[0,1,4,3,2,2,5,5]` | verified (M2 LS-PrePost render, 2026-08-02: clean prism, no twist). Regression in cf782f2 (`[0,1,2,2,3,4,5,5]`, inverted) fixed by bug report 2026-10-11 #4; pinned by `tests/test_bugreport_mapping.py::test_c19_*` |
 | 14 PYRAMID | solid | `[0,1,2,3,4,4,4,4]` | standard |
 | 9 QUAD | shell | `[0,1,2,3]` | verified |
 | 5 TRIANGLE | shell | `[0,1,2,2]` | standard degenerate |
 | 3 LINE | beam | `[0,1,0,0,0]` + zeros for orientation | geometry only |
 
-Stress tensor Voigt order for d3plot: `[xx, yy, zz, xy, xz, yz]` (verified M4, 2026-08-02).
-From a VTK `TENSORS` 3×3: `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`.
-Note: lasso docstring says `[σxy, σyz, σxz]` but binary layout is `[σxy, σxz, σyz]` — slots 4/5 swapped.
+Stress tensor Voigt order in d3plot: `[xx, yy, zz, xy, yz, zx]` (LS-DYNA database manual Jan 2023 p. 45-46; confirmed 2026-10-11 on the Vortex golden W3 shell stress: read as `[xy, yz, zx]` the global-frame plane stress gives max|S·n| = 8.8e-5, read as `[xy, xz, yz]` it gives 371). The earlier note here ("`[xx, yy, zz, xy, xz, yz]`, slots 4/5 swapped") was wrong.
+The builder extracts a VTK `TENSORS` 3×3 as `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`, i.e. t[0,2] → slot 4 (yz) and t[1,2] → slot 5 (zx). For anim_to_vtk solids this matches the Vortex golden by position over all W3 states (shear up to 1.69, match 5e-6); that anim_to_vtk stores yz at (0,2) is inferred from the golden, NOT verified from anim_to_vtk.cpp (the pyradioss port writer places zx at (0,2), so port-file solid shear slots may be swapped; open point). Shell tensors from anim_to_vtk have zero (0,2)/(1,2)/(2,2) entries.
 Shell stress: `anim_to_vtk` writes in element-local coords (z=0), Vortex golden uses global coords.
-Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (tolerance 1e-4; von Mises is rotation-invariant so local-frame stress gives exact VM values; raw σ components differ ~50% due to element-local vs global frame).
+Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (tolerance 1e-4; von Mises is rotation-invariant so local-frame stress gives exact VM values; raw σ components differ ~50% due to element-local vs global frame). With `rotate_shell_stress=True` the raw components match the golden by ID: W3 < 1e-5, zug < 2e-4 (zug limited by 6-digit VTK coordinates).
+`--rotate-shell-stress` rotates with the OpenRadioss local frame (quads: CLSKEW3 symmetric frame from r = x2+x3−x1−x4, s = x3+x4−x1−x2; triangles: e1 = N1→N2) rebuilt from each state's deformed coordinates, in the same `[xy, yz, zx]` slot order (fixed 2026-10-11, bug report #1/#2). Synthetic-uniaxial shell stress (from VONM / 2DELEM_Von_Mises) is not rotated (it has no frame); shell strain is never rotated.
 
 ## Result mapping
 
@@ -512,17 +524,29 @@ def test_pyradioss_run_and_convert(tmp_path):
 ## Post-v1 backlog
 
 - [x] Global variables from `{run}T01.csv` (resample /TFILE dt → state times).
+  `global_total_energy` = IE+KE+HE+CE+DE (LS-DYNA glstat convention: kinetic +
+  internal + hourglass + contact + damping); EN (pyfemsolver numerical
+  dissipation) and EW (external work) are not part of it. A T01 CSV with only
+  its header line is skipped with a warning (bug report 2026-10-11 #3, #27).
 - [x] Full shell stress tensors from pyradioss via upstream `anim_vtk.py` patch
   (port emits full tensors since M42; converter now supports local→global rotation
   via `--rotate-shell-stress` flag).
 - [x] `EROSION_STATUS` semantics resolution — **RESOLVED**: 1=alive, 0=dead,
   same polarity as OFF. Written for all element families. Current code correct.
-- [ ] SPH — **BLOCKED**: lasso writer bug #101 prevents SPH state writing
-  (critical bugs in `_write_states_sph`). Cannot implement until lasso is fixed.
+- [ ] SPH — writer side **UNBLOCKED**: `src/vtk2d3plot/lasso_patch.py` replaces
+  lasso 2.0.4 `_write_states_sph`, `_write_geom_sph_element_data_flags`
+  (isphfg(1) = 11) and `_write_geom_sph_node_and_materials`; SPH arrays
+  round-trip exactly and load in LS-PrePost (bug report 2026-10-11 #39). The
+  converter still skips VTK_VERTEX; mapping SPH VTK data is not implemented.
 - [ ] Thick shells — **N/A**: pyradioss/OpenRadioss VTK output does not emit thick
   shell element groups; all 8-node volumes are standard solids.
 - [x] 64-bit default — default output changed to f64.
 - [x] `.pvd`/XML `.vtu` input — VTU reader and PVD manifest parser added.
+  The VTU reader supports ascii / inline binary / appended raw and base64,
+  zlib / lzma (lz4 if the lz4 package is installed) compression, UInt32/UInt64
+  headers, both byte orders, several Pieces (concatenated), all 10 numeric VTK
+  types, 9-component arrays as (n, 3, 3) tensors, and FieldData TimeValue/TIME
+  as the state time (bug report 2026-10-11 #13, #14, #15, #16, #18).
 
 
 ## Self-review notes (already applied)
@@ -553,11 +577,28 @@ Settled before M1 implementation. Milestones 2–5 inherit these without re-aski
    on array presence, never the dialect string. Patched port files stay "port".
 8. **Topology check**: hard error on POINTS count, CELLS, CELL_TYPES, or identity
    arrays (NODE_ID/ELEMENT_ID/PART_ID) differing. Data-array availability differences
-   → warning (not error).
+   → warning (not error). Identity arrays must be present in all states or in none;
+   a state that adds or drops one is a TopologyError naming the file and the array.
+   `load_series_lazy` applies the same rule (metadata reading keeps the identity
+   arrays). State times must be finite and strictly increasing (bug report
+   2026-10-11 #19, #31, #33).
 9. **File sorting**: glob `*.vtk`, group by stem, error on >1 stem, sort by numeric
    suffix `A(\d+)`, verify monotonic time. Caller order preserved for explicit lists.
+   Directory and stem modes match .vtk/.vtu in any case on every platform; a stem
+   whose folder does not exist raises FileNotFoundError (no fallback to the cwd).
+   The CLI sorts each glob pattern's matches with the same numeric rule. For .pvd
+   input the DataSet timestep is the state time; it wins over a time stored in the
+   file (as in VTK's PVD reader) and a disagreement is reported as a warning; a
+   DataSet without a timestep uses the file's own time. Multi-part PVD collections
+   are refused (bug report 2026-10-11 #12, #15, #28, #32).
 10. **TENSORS**: read 9 tokens per cell (flexible line breaks), store `(n, 3, 3)` row-major.
     Symmetric-tensor sanity check belongs in the mapper (M4), not the reader.
 11. **Stubs (M1)**: full signatures + ConversionReport dataclass, bodies raise
     NotImplementedError naming the milestone. No `mapping.py`/`builder.py` in M1.
 12. **Test imports**: `from conftest import ...` pattern. No `__init__.py` in `tests/`.
+13. **Array-name case** (2026-10-11, bug report #5, #35): presence flags and every
+    gather of result arrays use one case-insensitive lookup (`builder._find_key` /
+    `_cell_array`). An exact-case match wins; when one state holds several names
+    that differ only in case, the others are ignored and a warning names them.
+    Identity arrays (NODE_ID / ELEMENT_ID / PART_ID) are still matched with exact
+    case, and a re-cased one is reported as unmapped.

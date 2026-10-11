@@ -53,7 +53,14 @@ docs/plan.md.
   False → one state file per block), `block_size_bytes`.
 - Not supported / broken in lasso 2.0.4: SPH state writing (issue #101),
   writing after modifying `node_temperature` (#65), rigid-body DCOMP
-  compression (#71). Avoid all three.
+  compression (#71). Avoid all three. SPH writing is worked around by
+  `vtk2d3plot.lasso_patch` (applied on `import vtk2d3plot`); lasso also writes
+  isphfg(1) as the variable count instead of the block length 11, which
+  misaligns every later geometry section on read (bug report 2026-10-11 #39).
+- ISTRN (element strain) is one global flag and IOSHL2 is set only when
+  `element_solid_effective_plastic_strain` exists, although the writer always
+  writes the 7 basic solid words: see docs/plan.md "Global constraints"
+  (bug report 2026-10-11 #7, #8, #26).
 
 ## LS-PrePost failure signatures
 

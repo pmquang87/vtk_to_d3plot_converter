@@ -22,7 +22,18 @@ build `...[4.13]DP\lsprepost4.13DP.exe` also exists.)
 ```
 
 It returns/prints a JSON summary: `loaded` (bool), `n_states`, `wordsize`,
-plus the raw `lspost.msg` path for diagnosis. In Python:
+plus the raw `lspost.msg` path for diagnosis. Every result dict has the same
+keys, including `cfile` and `path_notes`.
+
+- `--state N` (1-based) is honoured with or without `--fringe`; without
+  `--state`, `--fringe` shows the last state (bug report 2026-10-11 #25).
+- Non-ASCII d3plot/PNG paths are written into the cfile via the folder's 8.3
+  short path (the file name stays long so LS-PrePost finds the family files).
+  If no short path exists, the path is written in the ANSI code page and
+  `detail` / `path_notes` say LS-PrePost may fail; LS-PrePost 4.13 crashes
+  (0xC0000409) on a cp1252 'ü' folder (bug report 2026-10-11 #40).
+
+In Python:
 
 ```python
 from tools.lspp_check import check_d3plot
@@ -58,9 +69,11 @@ exit
 
 ## Interpreting failures
 
-- Exit 0 but `n_states` = 1 → the state file (`<name>.d3plot01`) is missing
-  next to the geometry file, or was not copied along. `write_d3plot` always
-  produces a family; ship all `<name>.d3plot*` files together.
+- Exit 0 but `n_states` lower than expected (e.g. 1) → state files of the
+  family are missing next to the geometry file, or were not copied along. The
+  converter writes one file per state (`<name>.d3plot01`, `...02`, ...);
+  LS-PrePost stops at the first missing number. Ship all `<name>.d3plot*`
+  files together.
 - Hang / no `lspost.msg` → almost always a forward-slash d3plot path in the
   cfile, or a non-quoted `[4.13]` exe path.
 - Loads but geometry looks exploded/twisted in the PNG → element connectivity

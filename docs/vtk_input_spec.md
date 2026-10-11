@@ -46,6 +46,14 @@ Source-verified 2026-08-02 against `pyradioss/output/anim_vtk.py` (local repo
   transverse shear separate in `qshear` (n, 2); szz = 0 (plane stress). A
   full-tensor export needs the local→global rotation (recomputed from
   geometry — this is exactly what Vortex-Radioss v1.02 had to add for ANIM).
+- Local frame used by `--rotate-shell-stress`: OpenRadioss CLSKEW3 (quads) /
+  c3coor3 (triangles), i.e. the QEPH/QBAT element frame. Shells from a BT4-type
+  corotational formulation (pyfemsolver `shell_bt4.py`: e3 = unit(v13 x v24),
+  e1 = projected N1→N2) use a different frame and would be rotated wrongly; VTK
+  carries no formulation info. anim_to_vtk-collapsed triangles (ascending node
+  order) lose the original N1→N2 edge, so their rotated components may be
+  wrong. Shells with zero-area geometry cannot be rotated; the builder counts
+  them in a warning (bug report 2026-10-11 #1).
 
 ### Recommended upstream patch (~15 lines, closes the 4 biggest gaps)
 
@@ -71,7 +79,15 @@ these automatically (they make a port file look like an official file).
 - `SCALARS EROSION_STATUS int 1` — **semantics RESOLVED**: 1=alive, 0=eroded/deleted.
   Same polarity as pyradioss `OFF`. Written for ALL element families (solids,
   shells, beams, trusses, springs). Elements in rigid/unintegrated parts may
-  emit 0 from state 0 (handled by ever_alive logic in builder.py).
+  emit 0 from state 0 (handled by ever_alive logic in builder.py; the warning
+  names the part IDs written to the d3plot). An element is dead only after it
+  has been observed alive in a state that holds real EROSION_STATUS data:
+  leading zeros of an element activated after state 0 are kept and do not
+  latch, and one-filled (missing) states do not count as observations; a 0→1
+  return after death is latched to 0 and warned once per element at its first
+  revival. Known edge: a missing state before activation is one-filled and
+  shows as alive (e.g. [0, missing, 0, 1] → [0, 1, 0, 1]); the one-fill warning
+  reports it (bug report 2026-10-11 #6).
 
 - Result arrays family-prefixed, names from the ANIM text fields (do not
   hardcode; underscores replace blanks): `1DELEM_*`, `2DELEM_{Plastic_Strain,
@@ -84,6 +100,18 @@ these automatically (they make a port file look like an official file).
   `Contact_Pressure_/_Normal`, `Contact_Pressure_/_Tangent`.
 - Zero NODE_IDs occur (Radioss-internal nodes): `zug_test3_RS` has one.
   Policy (match Vortex): renumber to max_id + 1.
+- Legacy FIELD blocks: a dataset-level FIELD (before POINT_DATA / CELL_DATA)
+  is used only for TIME; FIELD arrays inside POINT_DATA / CELL_DATA (meshio
+  vtk42 writes all data this way) are point / cell arrays and are read like
+  SCALARS, a 9-component one as an (n, 3, 3) tensor. Accepted legacy type
+  names (case-insensitive): bit, char, signed_char, unsigned_char, short,
+  unsigned_short, int (int32); unsigned_int, long, unsigned_long, vtktypeint64,
+  vtktypeuint64, vtkIdType (int64); float, double (float64); any other name
+  raises. Title time is only a fallback: `\bt=<float>` (word boundary,
+  well-formed float, no unit glued on: "time t=0.5s" gives no time); FIELD
+  TIME takes precedence. An empty title line is allowed; a file that ends
+  after the title raises "Truncated VTK file" (bug report 2026-10-11 #17, #18,
+  #29, #30). VTK 8+ METADATA / INFORMATION blocks are not supported (open).
 - Large real-world fixture for reader stress tests (not in repo):
   `E:\openradioss_run\getriebekette\badamid_konditioniert_MAT024_no-fail_STRFLG=11\vtk\`
   (66 MB, 46686 nodes, 205488 cells, types {3,5,9,10}).
