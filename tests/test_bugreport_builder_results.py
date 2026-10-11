@@ -68,11 +68,22 @@ def _copy_port(
         (dst / src.name).write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def _write_official(path, *, time_val, points, cells, cell_scalars=None, cell_tensors=None):
+def _write_official(
+    path,
+    *,
+    time_val,
+    points,
+    cells,
+    cell_scalars=None,
+    cell_tensors=None,
+    part_key="PART_ID",
+    part_values=None,
+):
     """Write a small official-dialect legacy VTK file.
 
     cells: list of (vtk_type, [0-based point indices]).
-    Node IDs 1..n, element IDs 1..m, all cells in part 1.
+    Node IDs 1..n, element IDs 1..m, all cells in part 1 (or part_values under
+    the name part_key).
     """
     cell_scalars = cell_scalars or {}
     cell_tensors = cell_tensors or {}
@@ -99,8 +110,8 @@ def _write_official(path, *, time_val, points, cells, cell_scalars=None, cell_te
     lines += ["0 0 0"] * n_pts
     lines += [f"CELL_DATA {n_cells}", "SCALARS ELEMENT_ID int 1", "LOOKUP_TABLE default"]
     lines += [str(i + 1) for i in range(n_cells)]
-    lines += ["SCALARS PART_ID int 1", "LOOKUP_TABLE default"]
-    lines += ["1"] * n_cells
+    lines += [f"SCALARS {part_key} int 1", "LOOKUP_TABLE default"]
+    lines += [str(p) for p in (part_values or [1] * n_cells)]
     for name, vals in cell_scalars.items():
         dtype = "int" if name.upper() == "EROSION_STATUS" else "float"
         lines += [f"SCALARS {name} {dtype} 1", "LOOKUP_TABLE default"]
@@ -276,6 +287,44 @@ def test_c13_case_collision_exact_wins(tmp_path):
     ]
 
 
+def test_c13_case_collision_exact_wins_not_sorted_first(tmp_path):
+    """Bug report 2026-10-11 #5 (c13): exact name wins even when it is not first in sort order.
+
+    '3DELEM_STRESS' sorts before '3DELEM_Stress' ('T' < 't'), so this test tells
+    "exact case wins" apart from "first in sorted order".
+    """
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot.api import convert
+
+    hex_pts = [
+        (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+    ]  # fmt: skip
+    exact = [[1.0, 4.0, 5.0], [4.0, 2.0, 6.0], [5.0, 6.0, 3.0]]
+    other = [[-100.0, -400.0, -500.0], [-400.0, -200.0, -600.0], [-500.0, -600.0, -300.0]]
+    for k in range(2):
+        _write_official(
+            tmp_path / f"runA{k:03d}.vtk",
+            time_val=0.1 * (k + 1),
+            points=hex_pts,
+            cells=[(12, list(range(8)))],
+            cell_tensors={"3DELEM_STRESS": [other], "3DELEM_Stress": [exact]},
+        )
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    d = _read(tmp_path / "out.d3plot")
+    s = d.arrays[ArrayType.element_solid_stress]
+    # Voigt [xx, yy, zz, xy, xz, yz] of the exact-name tensor, both states.
+    assert np.array_equal(s[:, 0, 0, :], [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]] * 2)
+    hits = [w for w in rep.warnings if "differ only in case" in w]
+    assert hits == [
+        (
+            "cell arrays '3DELEM_STRESS', '3DELEM_Stress' differ only in case at states "
+            "[0, 1]; using '3DELEM_Stress' (exact name), the others are ignored"
+        )
+    ]
+
+
 # ── #6 (c14): EROSION_STATUS latch kills late-activated elements ─────────
 
 
@@ -319,6 +368,78 @@ def test_c14_erosion_latch_late_activation(tmp_path):
         "EROSION_STATUS: 1 shell elements return to 1 after being eroded "
         "(states [2]); kept eroded (no resurrection)"
     ) in rep.warnings
+
+
+def test_c14_erosion_latch_ignores_filled_states(tmp_path):
+    """Bug report 2026-10-11 #6 (c14): a one-filled state is not an observation of 'alive'.
+
+    State 0 has no EROSION_STATUS (one-filled, warned). Element 1 reads 0 then 1:
+    it was never seen alive before state 1, so state 2 must stay 1 (late activation),
+    not be latched to 0 because of the filled 1.0 at state 0.
+    """
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot.api import convert
+
+    es = [None, [0, 1], [1, 1]]
+    pts, cells = _quads(2)
+    for k in range(3):
+        _write_official(
+            tmp_path / f"runA{k:03d}.vtk",
+            time_val=0.1 * (k + 1),
+            points=pts,
+            cells=cells,
+            cell_scalars={} if es[k] is None else {"EROSION_STATUS": es[k]},
+        )
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    d = _read(tmp_path / "out.d3plot")
+    order = np.argsort(d.arrays[ArrayType.element_shell_ids])
+    alive = d.arrays[ArrayType.element_shell_is_alive][:, order]
+    assert np.array_equal(alive, [[1.0, 1.0], [0.0, 1.0], [1.0, 1.0]])
+    assert (
+        "element_shell_is_alive: one-filled (all-alive) at states [0] "
+        "(source EROSION_STATUS array missing in those states)"
+    ) in rep.warnings
+    assert not [w for w in rep.warnings if "after being eroded" in w]
+
+
+@pytest.mark.parametrize("part_key", ["PART_ID", "part_id"])
+def test_c14_never_alive_warning_names_written_parts(tmp_path, part_key):
+    """Bug report 2026-10-11 #6 (c14): the never-alive warning names the parts in the d3plot.
+
+    The part IDs in the warning must be the ones the model wrote, whatever
+    rule the topology mapping uses for the part-ID array name.
+    """
+    from lasso.dyna import ArrayType
+
+    from vtk2d3plot.api import convert
+
+    pts, cells = _quads(2)
+    for k in range(2):
+        _write_official(
+            tmp_path / f"runA{k:03d}.vtk",
+            time_val=0.1 * (k + 1),
+            points=pts,
+            cells=cells,
+            cell_scalars={"EROSION_STATUS": [0, 1]},
+            part_key=part_key,
+            part_values=[7, 8],
+        )
+    rep = convert(sorted(tmp_path.glob("runA*.vtk")), tmp_path / "out.d3plot")
+    d = _read(tmp_path / "out.d3plot")
+    ids = d.arrays[ArrayType.element_shell_ids]
+    pidx = d.arrays[ArrayType.element_shell_part_indexes]
+    part_ids = d.arrays[ArrayType.part_titles_ids]
+    written = int(part_ids[pidx[int(np.flatnonzero(ids == 1)[0])]])
+    hits = [w for w in rep.warnings if "never alive" in w]
+    assert hits == [
+        (
+            f"EROSION_STATUS: 1 shell elements never alive in any state (parts [{written}]); "
+            "forced alive (rigid/non-integrated)"
+        )
+    ]
+    if part_key == "PART_ID":
+        assert written == 7
 
 
 # ── #34 (c27): internal-energy fill warnings dropped ─────────────────────

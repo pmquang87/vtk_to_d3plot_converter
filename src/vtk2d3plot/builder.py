@@ -37,7 +37,7 @@ def _cell_array(state, name: str) -> np.ndarray | None:
 # Canonical names the builder gathers (cell / point data).  Used only to report
 # names that differ only in case within one state (no silent mixing).
 _GATHERED_CELL_NAMES = (
-    "VONM", "EPSP", "OFF", "EROSION_STATUS", "PART_ID",
+    "VONM", "EPSP", "OFF", "EROSION_STATUS",
     "3DELEM_Stress", "3DELEM_Strain", "3DELEM_Plastic_Strain", "3DELEM_Von_Mises",
     "3DELEM_Specific_Energy",
     "2DELEM_Stress_(lower)", "2DELEM_Stress_(upper)", "2DELEM_Stress_(membrane)",
@@ -643,12 +643,10 @@ def build_d3plot(
     # ----------------------------------------------------------------
     # Key lookups: one rule for every gather (_find_key — exact case first,
     # then case-insensitive), matching the case-insensitive presence flags.
+    # Cell gathers use the module-level _cell_array().
     # ----------------------------------------------------------------
     def get_point_key(i: int, k: str) -> str | None:
         return _find_key(series.states[i].point_data, k)
-
-    def get_cell_key(i: int, k: str) -> str | None:
-        return _find_key(series.states[i].cell_data, k)
 
     warn_list: list[str] = _case_collision_warnings(series)
     n_states = len(series.states)
@@ -885,10 +883,10 @@ def build_d3plot(
                     beam_alive_fill.append(i)
 
         if alive_key == "EROSION_STATUS":
-            for alive_arr, src_arr, fill_list, type_name in [
-                (shell_alive, model.shell_src, shell_alive_fill, "shell"),
-                (solid_alive, model.solid_src, solid_alive_fill, "solid"),
-                (beam_alive, model.beam_src, beam_alive_fill, "beam"),
+            for alive_arr, part_idx, fill_list, type_name in [
+                (shell_alive, model.shell_part_idx, shell_alive_fill, "shell"),
+                (solid_alive, model.solid_part_idx, solid_alive_fill, "solid"),
+                (beam_alive, model.beam_part_idx, beam_alive_fill, "beam"),
             ]:
                 if alive_arr is None:
                     continue
@@ -907,25 +905,15 @@ def build_d3plot(
                 if n_never > 0:
                     # Force never-alive elements to alive (they are rigid/non-integrated)
                     alive_arr[:, never_alive_mask] = 1.0
-                    # Find which part IDs these elements belong to
-                    pid_data = _cell_array(series.states[0], "PART_ID")
-                    if pid_data is not None:
-                        affected_pids = sorted(
-                            {
-                                int(pid_data[src_arr[i]])
-                                for i in range(len(src_arr))
-                                if never_alive_mask[i]
-                            }
-                        )
-                        warn_list.append(
-                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state "
-                            f"(parts {affected_pids}); forced alive (rigid/non-integrated)"
-                        )
-                    else:
-                        warn_list.append(
-                            f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state; "
-                            f"forced alive (rigid/non-integrated)"
-                        )
+                    # Part IDs of these elements as written to the d3plot (the model's
+                    # part table), not a second lookup of the raw PART_ID array.
+                    affected_pids = sorted(
+                        {int(p) for p in model.part_ids[part_idx[never_alive_mask]]}
+                    )
+                    warn_list.append(
+                        f"EROSION_STATUS: {n_never} {type_name} elements never alive in any state "
+                        f"(parts {affected_pids}); forced alive (rigid/non-integrated)"
+                    )
 
                 # Step 2: Latch 1→0 transitions (element dies permanently, no resurrection).
                 # An element is dead only after it has been observed alive (M9 rule,
