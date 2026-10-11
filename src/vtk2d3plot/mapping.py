@@ -33,7 +33,10 @@ def map_topology(state0: VtkState) -> MappedModel:
     SOLID_TYPES = {
         12: [0, 1, 2, 3, 4, 5, 6, 7],  # hex
         10: [0, 1, 2, 3, 3, 3, 3, 3],  # tetra
-        13: [0, 1, 2, 2, 3, 4, 5, 5],  # wedge
+        # wedge: LS-DYNA pentahedron N5=N6, N7=N8. VTK's base triangle (0,1,2)
+        # faces away from (3,4,5); this order gives a positive Jacobian
+        # (verified M2 by LS-PrePost render; bug report 2026-10-11 #4).
+        13: [0, 1, 4, 3, 2, 2, 5, 5],
         14: [0, 1, 2, 3, 4, 4, 4, 4],  # pyramid
     }
     SHELL_TYPES = {
@@ -128,34 +131,27 @@ def map_topology(state0: VtkState) -> MappedModel:
                 solid_conn[neg_idx, 0] = solid_conn[neg_idx, 1]
                 solid_conn[neg_idx, 1] = tmp
 
-    # 3. Part IDs
+    # 3. Part IDs — only from kept (mapped) cells. Skipped (unsupported type)
+    # and phantom-masked cells are not written, so their parts must not appear
+    # as empty entries in the part table (bug report 2026-10-11 #20).
     if "PART_ID" in state0.cell_data:
         raw_part_ids = state0.cell_data["PART_ID"].astype(np.int32)
-        # Unique preserving order of appearance
-        u, idx, inv = np.unique(raw_part_ids, return_index=True, return_inverse=True)
+        kept_src = np.sort(np.concatenate([solid_src, shell_src, beam_src]))
+        kept_part_ids = raw_part_ids[kept_src]
+        # Unique preserving order of appearance (in VTK cell order)
+        u, idx, inv = np.unique(kept_part_ids, return_index=True, return_inverse=True)
         sort_idx = np.argsort(idx)
-        part_ids = u[sort_idx]
+        part_ids = u[sort_idx].astype(np.int32)
 
-        # Map from raw_part_ids to index in part_ids array
+        # Map from VTK cell index (kept cells only) to index in part_ids array
         sort_idx_inv = np.empty_like(sort_idx)
-        sort_idx_inv[sort_idx] = np.arange(len(sort_idx), dtype=np.int32)
-        raw_to_part_idx = sort_idx_inv[inv]
+        sort_idx_inv[sort_idx] = np.arange(len(sort_idx))
+        cell_to_part_idx = np.full(len(raw_part_ids), -1, dtype=np.int32)
+        cell_to_part_idx[kept_src] = sort_idx_inv[inv.reshape(-1)]
 
-        solid_part_idx = (
-            raw_to_part_idx[solid_src]
-            if len(solid_src)
-            else np.empty((0,), dtype=np.int32)
-        )
-        shell_part_idx = (
-            raw_to_part_idx[shell_src]
-            if len(shell_src)
-            else np.empty((0,), dtype=np.int32)
-        )
-        beam_part_idx = (
-            raw_to_part_idx[beam_src]
-            if len(beam_src)
-            else np.empty((0,), dtype=np.int32)
-        )
+        solid_part_idx = cell_to_part_idx[solid_src]
+        shell_part_idx = cell_to_part_idx[shell_src]
+        beam_part_idx = cell_to_part_idx[beam_src]
     else:
         part_ids = np.array([1], dtype=np.int32)
         solid_part_idx = np.zeros_like(solid_src, dtype=np.int32)
