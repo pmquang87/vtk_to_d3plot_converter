@@ -1012,15 +1012,9 @@ def build_d3plot(
     # ================================================================
     # M9: unmapped-array warnings
     # ================================================================
-    _RECOGNIZED_POINT = {
-        "DISPLACEMENT",
-        "Displacement",
-        "VELOCITY",
-        "Velocity",
-        "ACCELERATION",
-        "Acceleration",
-        "NODE_ID",
-    }
+    # NODE_ID is read with exact case (mapping.py); the kinematic arrays are
+    # resolved per state below (mapped_point), case-insensitively.
+    _RECOGNIZED_POINT = {"NODE_ID"}
     _RECOGNIZED_CELL = {
         "ELEMENT_ID",
         "PART_ID",
@@ -1072,7 +1066,14 @@ def build_d3plot(
     unmapped_cell: dict[str, float] = {}
     unsupported: dict[str, float] = {}
     unmapped_point: dict[str, float] = {}
-    for state in series.states:
+    for i_state, state in enumerate(series.states):
+        # Bug report 2026-10-11 #35 (c28): the kinematic point arrays are mapped
+        # case-insensitively through get_point_key, so they count as recognised
+        # under exactly the key get_point_key resolves to (a shadowed duplicate
+        # such as "Velocity" next to "velocity" stays reported as unmapped).
+        mapped_point = {
+            get_point_key(i_state, name) for name in ("DISPLACEMENT", "VELOCITY", "ACCELERATION")
+        }
         for k, v in state.cell_data.items():
             if k not in _RECOGNIZED_CELL:
                 try:
@@ -1084,7 +1085,7 @@ def build_d3plot(
                 else:
                     unmapped_cell[k] = max(unmapped_cell.get(k, 0.0), val)
         for k, v in state.point_data.items():
-            if k not in _RECOGNIZED_POINT:
+            if k not in _RECOGNIZED_POINT and k not in mapped_point:
                 try:
                     val = float(np.abs(v).max())
                 except (TypeError, ValueError):
@@ -1101,20 +1102,22 @@ def build_d3plot(
         items = ", ".join(f"{k} (absmax={v:.4g})" for k, v in sorted(all_unmapped.items()))
         warn_list.append(f"unmapped arrays ignored: {items}")
 
-    # T01 global variables
-    ie_resampled = None
-    ke_resampled = None
-    en_resampled = None
-    if hasattr(series, "t01_data") and series.t01_data is not None:
-        t01 = series.t01_data
-        # Resample T01 columns at VTK state times
-        if "IE" in t01.columns:
-            ie_resampled = np.interp(series.times, t01.times, t01.columns["IE"]).astype(ftype)
-        if "KE" in t01.columns:
-            ke_resampled = np.interp(series.times, t01.times, t01.columns["KE"]).astype(ftype)
-        # EN = total energy
-        if "EN" in t01.columns:
-            en_resampled = np.interp(series.times, t01.times, t01.columns["EN"]).astype(ftype)
+    # T01 global variables (bug report 2026-10-11 #3 / #27: see _t01_globals)
+    ie_resampled, ke_resampled, te_resampled = _t01_globals(series, ftype, warn_list)
+
+    # d3plot record-layout consistency (bug report 2026-10-11 #7, #8, #26)
+    solid_strain, shell_strain, solid_eps = _layout_zero_fills(
+        n_states,
+        n_solids,
+        n_shells,
+        ftype,
+        warn_list,
+        solid_stress=solid_stress,
+        solid_eps=solid_eps,
+        solid_history_vars=solid_history_vars,
+        solid_strain=solid_strain,
+        shell_strain=shell_strain,
+    )
 
     # ----------------------------------------------------------------
     # Assemble D3plot
@@ -1142,22 +1145,15 @@ def build_d3plot(
 
     a[ArrayType.part_ids] = model.part_ids.astype(itype)
     a[ArrayType.part_titles_ids] = model.part_ids.astype(itype)
-    if part_names:
-        titles_list = []
-        for pid in model.part_ids:
-            name = part_names.get(int(pid), f"Part {int(pid)}")
-            titles_list.append(name.encode("utf-8"))
-        a[ArrayType.part_titles] = np.array(titles_list)
-    else:
-        a[ArrayType.part_titles] = np.array([b"Part %d" % int(pid) for pid in model.part_ids])
+    a[ArrayType.part_titles] = _part_titles(model.part_ids, part_names, warn_list)
 
     a[ArrayType.global_timesteps] = series.times.astype(ftype)
     if ie_resampled is not None:
         a[ArrayType.global_internal_energy] = ie_resampled
     if ke_resampled is not None:
         a[ArrayType.global_kinetic_energy] = ke_resampled
-    if en_resampled is not None:
-        a[ArrayType.global_total_energy] = en_resampled
+    if te_resampled is not None:
+        a[ArrayType.global_total_energy] = te_resampled
 
     a[ArrayType.node_displacement] = node_disp
 
@@ -1214,3 +1210,136 @@ def build_d3plot(
         d3.header.ftype = np.float64
 
     return d3, warn_list
+
+
+# ----------------------------------------------------------------------
+# Bug report 2026-10-11 helpers (T01 globals, layout zero-fills, part titles)
+# ----------------------------------------------------------------------
+
+# Columns of the pyradioss T01 CSV (pyfemsolver/output/time_history.py, the only
+# T01 writer the converter reads) that make up the d3plot global "total energy".
+# LS-DYNA convention (glstat): total = kinetic + internal + hourglass + sliding
+# interface (contact) + damping energy.  pyfemsolver maps these to KE, IE, HE,
+# CE and DE (engine/engine.py energy dict: "DE": state.e_damp = /DAMP dissipation).
+# EN is pyfemsolver's numerical-dissipation ledger (engine.py: e_num, "numerical
+# dissipation of the elements") and EW the external work; neither is part of the
+# LS-DYNA total, which must show such a loss as a drop instead of hiding it.
+_T01_TOTAL_ENERGY_COLUMNS = ("IE", "KE", "HE", "CE", "DE")
+
+
+def _t01_globals(series, ftype, warn_list: list[str]):
+    """Resample the T01 energies at the VTK state times.
+
+    Returns ``(internal, kinetic, total)``, each ``(n_states,)`` or ``None``.
+    A T01 file without data rows is skipped with a warning (bug report
+    2026-10-11 #27); the total energy is the sum of the energy columns, never
+    the EN column (bug report 2026-10-11 #3).
+    """
+    t01 = getattr(series, "t01_data", None)
+    if t01 is None:
+        return None, None, None
+    if len(t01.times) == 0:
+        warn_list.append(
+            "T01 CSV has no data rows; global energies (internal, kinetic, total) not written"
+        )
+        return None, None, None
+
+    def _resample(values: np.ndarray) -> np.ndarray:
+        return np.interp(series.times, t01.times, values).astype(ftype)
+
+    ie = _resample(t01.columns["IE"]) if "IE" in t01.columns else None
+    ke = _resample(t01.columns["KE"]) if "KE" in t01.columns else None
+    te = None
+    if ie is not None and ke is not None:
+        te_cols = [c for c in _T01_TOTAL_ENERGY_COLUMNS if c in t01.columns]
+        te = _resample(np.sum([t01.columns[c] for c in te_cols], axis=0))
+        unused = [c for c in t01.columns if c not in _T01_TOTAL_ENERGY_COLUMNS]
+        warn_list.append(
+            f"global_total_energy = {'+'.join(te_cols)} from T01 (LS-DYNA convention: "
+            f"kinetic + internal + hourglass + contact + damping; EN numerical "
+            f"dissipation and EW external work excluded); T01 columns not written: "
+            f"{', '.join(unused) if unused else 'none'}"
+        )
+    else:
+        warn_list.append("T01 CSV lacks the IE and/or KE column; global_total_energy not written")
+    return ie, ke, te
+
+
+def _layout_zero_fills(
+    n_states: int,
+    n_solids: int,
+    n_shells: int,
+    ftype,
+    warn_list: list[str],
+    *,
+    solid_stress,
+    solid_eps,
+    solid_history_vars,
+    solid_strain,
+    shell_strain,
+):
+    """Zero-fill the state arrays the lasso 2.0.4 record layout needs.
+
+    lasso derives the d3plot layout flags from array PRESENCE:
+
+    * ISTRN is one global flag, set when any element family carries strain
+      (``D3plotWriterSettings.build_header``).  Shells then need 12 strain words
+      each and solids 6 strain words at the end of NEIPH.  A family without its
+      strain array gets a broken record: solids compute NEIPH - 6 < 0 history
+      words and drop them (bug report #7), shells without any state array make
+      the writer raise (bug report #26).  So: zero-fill the missing strain.
+    * The writer always writes the 7 basic solid words (stress + eff. plastic
+      strain), but IOSHL1/IOSHL2 are only non-zero when a stress / plastic-strain
+      array exists.  Readers then skip fewer words and shift history variables
+      and strain by one word (bug report #8).  So: whenever solids carry state
+      data, zero-fill the solid plastic strain (it sets IOSHL2=999 and, via
+      IOSHL1's solid branch, IOSHL1>=999).
+    """
+    reason_strain = "required because element strain sets the global d3plot ISTRN flag"
+    if solid_strain is not None or shell_strain is not None:
+        if n_solids > 0 and solid_strain is None:
+            solid_strain = np.zeros((n_states, n_solids, 1, 6), dtype=ftype)
+            warn_list.append(
+                f"element_solid_strain: zero-filled at all states (no solid strain "
+                f"source array; {reason_strain})"
+            )
+        if n_shells > 0 and shell_strain is None:
+            shell_strain = np.zeros((n_states, n_shells, 2, 6), dtype=ftype)
+            warn_list.append(
+                f"element_shell_strain: zero-filled at all states (no shell strain "
+                f"source array; {reason_strain})"
+            )
+    solids_have_data = any(
+        arr is not None for arr in (solid_stress, solid_history_vars, solid_strain)
+    )
+    if n_solids > 0 and solid_eps is None and solids_have_data:
+        solid_eps = np.zeros((n_states, n_solids, 1), dtype=ftype)
+        warn_list.append(
+            "element_solid_effective_plastic_strain: zero-filled at all states (no solid "
+            "plastic-strain source array; required so that readers skip the always-written "
+            "plastic-strain word of the solid record)"
+        )
+    return solid_strain, shell_strain, solid_eps
+
+
+def _part_titles(part_ids: np.ndarray, part_names: dict[int, str] | None, warn_list):
+    """Part title bytes for lasso, sanitised like the header title.
+
+    lasso 2.0.4 pads each part title to 18*4 = 72 characters and only then
+    UTF-8-encodes it (``d3plot.py`` part-title writer, ``title_wordsize = 4``
+    for every file wordsize), so a multi-byte character lengthens the record
+    and shifts every later one (bug report 2026-10-11 #9).  The 72-character
+    budget is independent of f32/f64 output, which is ``_sanitize_title``'s
+    ``wordsize=8`` budget (10*8 - 8 = 72).
+    """
+    titles = []
+    for pid in part_ids:
+        pid = int(pid)
+        name = part_names.get(pid) if part_names else None
+        if name is None:
+            titles.append(b"Part %d" % pid)
+            continue
+        clean, warns = _sanitize_title(name, wordsize=8)
+        warn_list.extend(f"part {pid} {w}" for w in warns)
+        titles.append(clean.encode("ascii"))
+    return np.array(titles)
