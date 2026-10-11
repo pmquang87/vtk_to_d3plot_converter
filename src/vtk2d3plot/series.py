@@ -181,15 +181,19 @@ def _list_vtk_files(folder: Path) -> list[Path]:
     return [f for f in folder.iterdir() if f.suffix.lower() in _VTK_SUFFIXES and f.is_file()]
 
 
-def _ignored_files_warning(folder: Path, files: list[Path], kept: list[Path]) -> str | None:
-    """Report the .vtk/.vtu files of *folder* that are not series states."""
+def _ignored_files_warning(files: list[Path], kept: list[Path]) -> str | None:
+    """Report the .vtk/.vtu files of the input folder that are not series states.
+
+    The folder path is left out on purpose: the user gave it, and api.convert
+    classifies warnings by substrings that a folder name could contain.
+    """
     kept_set = set(kept)
     ignored = sorted((f.name for f in files if f not in kept_set), key=_natural_key)
     if not ignored:
         return None
     shown = ", ".join(ignored[:10]) + (", ..." if len(ignored) > 10 else "")
     return (
-        f"Directory {folder}: ignored {len(ignored)} file(s) without the "
+        f"Ignored {len(ignored)} file(s) in the input folder without the "
         f"<stem>A<number>.vtk/.vtu state name: {shown}"
     )
 
@@ -214,7 +218,7 @@ def _resolve_inputs(
         elif path.is_dir():
             files = _list_vtk_files(path)
             paths = _sort_and_filter_files(files)
-            notice = _ignored_files_warning(path, files, paths)
+            notice = _ignored_files_warning(files, paths)
             if notice:
                 warn_list.append(notice)
         elif path.suffix.lower() in _VTK_SUFFIXES:
@@ -425,9 +429,11 @@ def _natural_key(name: str) -> tuple:
 
 
 def _same_state_error(a: Path, b: Path, what: str) -> ValueError:
-    a, b = sorted((a, b), key=lambda p: p.name)
+    a, b = sorted((a, b), key=lambda p: (p.name, str(p)))
+    # Names alone are ambiguous when a CLI glob spans folders (r1/runA000.vtk, r2/runA000.vtk).
+    na, nb = (a.name, b.name) if a.parent == b.parent else (str(a), str(b))
     return ValueError(
-        f"{a.name} and {b.name} are the same state ({what}); remove one of them "
+        f"{na} and {nb} are the same state ({what}); remove one of them "
         f"or pass an explicit file list"
     )
 

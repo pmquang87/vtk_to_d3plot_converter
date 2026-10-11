@@ -21,7 +21,7 @@ from vtk2d3plot.series import TopologyError, load_series, load_series_lazy, pars
 pytestmark = pytest.mark.suspicions
 
 
-# â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── helpers ─────────────────────────────────────────────────────────────────
 
 
 def _write_vtk(
@@ -66,7 +66,7 @@ def _read_d3(path):
     return D3plot(str(path))
 
 
-# â”€â”€ S02: T01 restart / duplicate rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── S02: T01 restart / duplicate rows ───────────────────────────────────────
 
 # Segment 1 runs to t = 0.16 and has a plain duplicate at t = 0.04; the solver
 # restarts at t = 0.06 (segment 2), whose last row is written twice.
@@ -150,11 +150,11 @@ def test_s02_clean_t01_has_no_restart_warning(tmp_path):
     assert not any("superseded" in w for w in rep.warnings)
 
 
-# â”€â”€ S06: other .vtk/.vtu files in a series folder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── S06: other .vtk/.vtu files in a series folder ───────────────────────────
 
-_S06_WARNING_RE = (
-    r"ignored 2 file\(s\) without the <stem>A<number>\.vtk/\.vtu state name: "
-    r"extra\.vtk, mesh\.vtu"
+_S06_WARNING = (
+    "Ignored 2 file(s) in the input folder without the <stem>A<number>.vtk/.vtu "
+    "state name: extra.vtk, mesh.vtu"
 )
 
 
@@ -168,11 +168,9 @@ def test_s06_ignored_files_reported(tmp_path):
 
     rep = convert(tmp_path, tmp_path / "out.d3plot")
     assert rep.n_states == 2
-    hits = [w for w in rep.warnings if re.search(_S06_WARNING_RE, w)]
-    assert len(hits) == 1, rep.warnings
-    assert str(tmp_path) in hits[0]
+    assert rep.warnings.count(_S06_WARNING) == 1, rep.warnings
     for ser in (load_series(tmp_path), load_series_lazy(tmp_path)):
-        assert [w for w in ser.warnings if re.search(_S06_WARNING_RE, w)] == hits
+        assert _S06_WARNING in ser.warnings
 
 
 def test_s06_no_warning_without_extra_files(tmp_path):
@@ -185,7 +183,7 @@ def test_s06_no_warning_without_extra_files(tmp_path):
     assert not any("ignored" in w for w in load_series(tmp_path).warnings)
 
 
-# â”€â”€ S07: natural sort for names without A<digits> â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── S07: natural sort for names without A<digits> ───────────────────────────
 
 
 def test_s07_natural_sort_directory(tmp_path):
@@ -218,7 +216,38 @@ def test_s07_natural_sort_several_digit_runs(tmp_path):
     ]
 
 
-# â”€â”€ S24: the same state twice (.vtk and .vtu, or A1 and A001) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def test_s07_natural_sort_ignores_case(tmp_path):
+    """S07: text runs compare case-insensitively (out_1, Out_2, out_10)."""
+    for t, name in ((1.0, "out_1.vtk"), (2.0, "Out_2.vtk"), (10.0, "out_10.vtk")):
+        _write_vtk(tmp_path / name, t)
+    assert load_series(tmp_path).times.tolist() == [1.0, 2.0, 10.0]
+
+
+def _run_cli(args):
+    return subprocess.run(
+        [sys.executable, "-m", "vtk2d3plot.cli", *map(str, args)],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        check=False,
+    )
+
+
+def test_s07_cli_glob_across_folders(tmp_path):
+    """S07/S24: a CLI glob step_*/out.vtk orders the folders naturally; same names
+    in different folders are different states."""
+    from lasso.dyna import ArrayType
+
+    for n in (10, 2, 1):
+        (tmp_path / f"step_{n}").mkdir()
+        _write_vtk(tmp_path / f"step_{n}" / "out.vtk", float(n))
+    r = _run_cli([tmp_path / "step_*" / "out.vtk", "-o", tmp_path / "s.d3plot", "-q"])
+    assert r.returncode == 0, r.stderr
+    ts = _read_d3(tmp_path / "s.d3plot").arrays[ArrayType.global_timesteps]
+    assert ts.tolist() == [1.0, 2.0, 10.0]
+
+
+# ── S24: the same state twice (.vtk and .vtu, or A1 and A001) ───────────────
 
 
 @pytest.mark.parametrize(
@@ -260,17 +289,21 @@ def test_s24_cli_glob_same_state_twice(tmp_path):
     _write_vtk(tmp_path / "runA000.vtk", 0.0)
     _write_vtk(tmp_path / "runA1.vtk", 1.0)
     _write_vtk(tmp_path / "runA001.vtk", 1.0)
-    r = subprocess.run(
-        [sys.executable, "-m", "vtk2d3plot.cli", str(tmp_path / "runA*.vtk"), "-o"]
-        + [str(tmp_path / "out.d3plot"), "-q"],
-        capture_output=True,
-        text=True,
-        cwd=REPO,
-        check=False,
-    )
+    r = _run_cli([tmp_path / "runA*.vtk", "-o", tmp_path / "out.d3plot", "-q"])
     assert r.returncode == 1
     assert "runA001.vtk and runA1.vtk are the same state" in r.stderr, r.stderr
     assert not (tmp_path / "out.d3plot").exists()
+
+
+def test_s24_cli_glob_same_state_in_two_folders(tmp_path):
+    """S24: one state number in two folders names the files with their folders."""
+    for d, n in (("r1", 0), ("r1", 1), ("r2", 0)):
+        (tmp_path / d).mkdir(exist_ok=True)
+        _write_vtk(tmp_path / d / f"runA00{n}.vtk", float(n))
+    r = _run_cli([tmp_path / "r*" / "runA*.vtk", "-o", tmp_path / "out.d3plot", "-q"])
+    assert r.returncode == 1
+    a, b = tmp_path / "r1" / "runA000.vtk", tmp_path / "r2" / "runA000.vtk"
+    assert f"{a} and {b} are the same state" in r.stderr, r.stderr
 
 
 def test_s24_explicit_list_not_affected(tmp_path):
@@ -281,7 +314,7 @@ def test_s24_explicit_list_not_affected(tmp_path):
     assert load_series([a, b, c]).times.tolist() == [0.0, 1.0, 2.0]
 
 
-# â”€â”€ S08: multi-part PVD (probe pins) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── S08: multi-part PVD (probe pins) ────────────────────────────────────────
 
 
 def _write_pvd_rows(path, rows):
@@ -319,7 +352,7 @@ def test_s08_pvd_duplicate_timestep_names_both_files(tmp_path):
             loader(pvd)
 
 
-# â”€â”€ S09: malformed T01 rows (probe pins) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── S09: malformed T01 rows (probe pins) ────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -348,7 +381,7 @@ def test_s09_ragged_header_does_not_abort(tmp_path):
     assert any("BOXIMPT01.csv" in w and "no data rows" in w for w in rep.warnings)
 
 
-# â”€â”€ (e): both loaders report the first problem in file order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── (e): both loaders report the first problem in file order ────────────────
 #
 # Each case: three files runA000..runA002, two problems in different files.
 # Problems per file, checked in this order: time missing, time not after the
