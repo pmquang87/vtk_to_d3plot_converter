@@ -131,6 +131,22 @@ def test_s16_verify_double_space_path(tmp_path, capsys, legacy):
     assert "FAILED: 1 mismatches found." in out
 
 
+def test_s16_verify_tolerates_stray_outer_whitespace(tmp_path, capsys):
+    """S16 (verifier round 1): stray spaces around a hand-edited line are ignored, as
+    before the fix - only inner double spaces belong to the path."""
+    import tools.golden_manifest as gm
+
+    root = _small_tree(tmp_path / "data", names=(DS_NAME, "port_dialect/c.txt"))
+    lines = []
+    for name in (DS_NAME, "port_dialect/c.txt"):
+        data = (root / name).read_bytes()
+        lines.append(f"  {_sha(data)}  {len(data)}  {name}   \n")
+    man = tmp_path / "m.sha256"
+    man.write_text("".join(lines), encoding="utf-8", newline="\n")
+    assert gm.main(["verify", "--root", str(root), "--manifest", str(man)]) == 0
+    assert "OK: all 2 golden files match manifest" in capsys.readouterr().out
+
+
 def test_s16_generate_verify_roundtrip_double_space(tmp_path, capsys):
     """S16: generate + verify round-trip on a tree with a double-space file name."""
     import tools.golden_manifest as gm

@@ -151,8 +151,10 @@ def verify(root: Path = DATA_DIR, manifest: Path | None = None) -> int:
     manifest_entries = set()
     with manifest.open("r", encoding="utf-8") as f:
         for line in f:
-            line = line.rstrip("\r\n")
-            if not line.strip() or line.startswith("#"):
+            # Outer whitespace is never part of a path (Windows ignores trailing
+            # spaces in names); inner double spaces are kept by _LINE_RE.
+            line = line.strip()
+            if not line or line.startswith("#"):
                 continue
             m = _LINE_RE.match(line)
             if m is None:
