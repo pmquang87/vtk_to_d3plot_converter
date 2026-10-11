@@ -172,7 +172,7 @@ class MappedModel:
     solid_ids: np.ndarray; solid_part_idx: np.ndarray
     shell_conn: np.ndarray          # (n_shells, 4)
     shell_ids: np.ndarray; shell_part_idx: np.ndarray
-    beam_conn: np.ndarray           # (n_beams, 5); orientation cols zero
+    beam_conn: np.ndarray           # (n_beams, 5); cols 2-4 = -1 (d3plot word 0)
     beam_ids: np.ndarray; beam_part_idx: np.ndarray
     part_ids: np.ndarray            # (n_parts,) int32
     solid_src: np.ndarray           # (n_solids,) int32 — VTK cell index of each solid, for result gather
@@ -206,13 +206,13 @@ d3plot identifies shape by repeated-node patterns in fixed-width connectivity.
 | 14 PYRAMID | solid | `[0,1,2,3,4,4,4,4]` | standard |
 | 9 QUAD | shell | `[0,1,2,3]` | verified |
 | 5 TRIANGLE | shell | `[0,1,2,2]` | standard degenerate |
-| 3 LINE | beam | `[0,1,0,0,0]` + zeros for orientation | geometry only |
+| 3 LINE | beam | `[0,1]` + `-1` in cols 2-4 (written as d3plot word 0: no orientation node, null entries 0; milestone 14 S12) | geometry only |
 
 Stress tensor Voigt order in d3plot: `[xx, yy, zz, xy, yz, zx]` (LS-DYNA database manual Jan 2023 p. 45-46; confirmed 2026-10-11 on the Vortex golden W3 shell stress: read as `[xy, yz, zx]` the global-frame plane stress gives max|S·n| = 8.8e-5, read as `[xy, xz, yz]` it gives 371). The earlier note here ("`[xx, yy, zz, xy, xz, yz]`, slots 4/5 swapped") was wrong.
 The builder extracts a VTK `TENSORS` 3×3 as `[t[0,0], t[1,1], t[2,2], t[0,1], t[0,2], t[1,2]]`, i.e. t[0,2] → slot 4 (yz) and t[1,2] → slot 5 (zx). For anim_to_vtk solids this matches the Vortex golden by position over all W3 states (shear up to 1.69, match 5e-6); that anim_to_vtk stores yz at (0,2) is inferred from the golden, NOT verified from anim_to_vtk.cpp (the pyradioss port writer places zx at (0,2), so port-file solid shear slots may be swapped; open point). Shell tensors from anim_to_vtk have zero (0,2)/(1,2)/(2,2) entries.
 Shell stress: `anim_to_vtk` writes in element-local coords (z=0), Vortex golden uses global coords.
 Solid stress matches golden directly (rel. err < 1e-6); shell stress matches via von Mises invariant (tolerance 1e-4; von Mises is rotation-invariant so local-frame stress gives exact VM values; raw σ components differ ~50% due to element-local vs global frame). With `rotate_shell_stress=True` the raw components match the golden by ID: W3 < 1e-5, zug < 2e-4 (zug limited by 6-digit VTK coordinates).
-`--rotate-shell-stress` rotates with the OpenRadioss local frame (quads: CLSKEW3 symmetric frame from r = x2+x3−x1−x4, s = x3+x4−x1−x2; triangles: e1 = N1→N2) rebuilt from each state's deformed coordinates, in the same `[xy, yz, zx]` slot order (fixed 2026-10-11, bug report #1/#2). Synthetic-uniaxial shell stress (from VONM / 2DELEM_Von_Mises) is not rotated (it has no frame); shell strain is never rotated.
+`--rotate-shell-stress` rotates with the OpenRadioss local frame (quads: CLSKEW3 symmetric frame from r = x2+x3−x1−x4, s = x3+x4−x1−x2; triangles: e1 = N1→N2) rebuilt from each state's deformed coordinates, in the same `[xy, yz, zx]` slot order (fixed 2026-10-11, bug report #1/#2). Synthetic-uniaxial shell stress (from VONM / 2DELEM_Von_Mises) is not rotated (it has no frame). Shell strain is rotated with the same frames as a tensor (anim_to_vtk shell strain shear is tensorial: OpenRadioss tensorc.F halves the engineering shear; the zug golden matches to 2.1e-4), milestone 14 (b).
 
 ## Result mapping
 

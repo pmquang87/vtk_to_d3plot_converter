@@ -90,9 +90,9 @@ it; a message that matches no template gets `OTHER`.
 | `NO_DISPLACEMENT` | no displacement array; state 0 coordinates used as undeformed geometry |
 | `SYNTHETIC_STRESS` | stress tensor built as uniaxial `[vm, 0, 0, 0, 0, 0]` from a von Mises scalar |
 | `SHELL_LOCAL_FRAME` | shell stress or strain is in element-local coordinates |
-| `SHELL_STRESS_ROTATED` | shell stress was rotated to the global frame (`--rotate-shell-stress`) |
-| `ROTATION_IGNORED` | `--rotate-shell-stress` ignored (synthetic stress has no frame) |
-| `DEGENERATE_SHELL_FRAMES` | some shells have no usable local frame; their rotated stress is unreliable |
+| `SHELL_ROTATED` | shell stress and/or strain was rotated to the global frame (`--rotate-shell-stress`) |
+| `ROTATION_IGNORED` | `--rotate-shell-stress` left the shell stress unrotated (synthetic stress has no frame); strain, if any, is still rotated |
+| `DEGENERATE_SHELL_FRAMES` | some shells have no usable local frame; their rotated stress / strain is unreliable |
 | `SINGLE_LAYER_SOURCE` | only the upper or the lower plastic-strain layer exists; mapped to one layer |
 | `STRAIN_MEMBRANE_IGNORED` | membrane strain ignored because upper/lower strain exists |
 | `LAYER_MISMATCH` | shell results have different layer counts; reconciled |

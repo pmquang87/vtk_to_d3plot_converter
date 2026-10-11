@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--rotate-shell-stress",
         action="store_true",
         default=False,
-        help="Rotate shell stress from element-local to global coordinate frame.",
+        help="Rotate shell stress and strain from the element-local to the global coordinate frame.",
     )
     ap.add_argument(
         "--title",

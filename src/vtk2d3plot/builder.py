@@ -86,11 +86,17 @@ def _tensor_to_voigt(t: np.ndarray, out: np.ndarray | None = None) -> np.ndarray
     max|S.n| = 8.8e-5, read as [xy, xz, yz] it gives 371).
 
     Extraction is [t00, t11, t22, t01, t02, t12]: slot 4 (yz) takes t[0,2] and
-    slot 5 (zx) takes t[1,2]. For anim_to_vtk solid tensors this reproduces
-    the Vortex golden W3 solid stress by position (all states, shear up to
-    1.69, match 5e-6); that anim_to_vtk stores yz at (0,2) is inferred from
-    the golden, not verified from anim_to_vtk.cpp (the pyradioss port writer
-    places zx at (0,2)). Shell tensors from anim_to_vtk have zero out-of-plane
+    slot 5 (zx) takes t[1,2], because the VTK writers put yz at (0,2) and zx
+    at (1,2) (verified from source, milestone 14, suspicions (a)):
+    anim_to_vtk.cpp (OpenCourant/Tools @4e52942, L1473-1475) writes the rows
+    [v0 v3 v4 / v3 v1 v5 / v4 v5 v2] from the ANIM order x, y, z, xy, yz, zx
+    (OpenRadioss srota6.F / tensor6.F); the pyfemsolver port writer uses the
+    same layout (_VOIGT9 = [0, 3, 4, 3, 1, 5, 4, 5, 2], restored in pyfemsolver
+    56f5df0c on 2026-10-10; port files written between 2026-09-14 and that
+    commit have yz and zx swapped at the source and cannot be told apart).
+    This reproduces the Vortex golden W3 solid stress (all states, shear up to
+    1.69, match 5e-6); Vortex copies the ANIM components into the d3plot
+    slots 1:1. Shell tensors from anim_to_vtk have zero out-of-plane
     entries, so the shell shear slots are only filled by
     rotate_stress_to_global, which uses this same slot order.
     """

@@ -174,7 +174,7 @@ class WarningCode(str, Enum):
     ALIVE_SOURCE = "ALIVE_SOURCE"
     ALIVE_FILL = "ALIVE_FILL"
     EROSION_NO_RESURRECTION = "EROSION_NO_RESURRECTION"
-    SHELL_STRESS_ROTATED = "SHELL_STRESS_ROTATED"
+    SHELL_ROTATED = "SHELL_ROTATED"
     ROTATION_IGNORED = "ROTATION_IGNORED"
     DEGENERATE_SHELL_FRAMES = "DEGENERATE_SHELL_FRAMES"
     SINGLE_LAYER_SOURCE = "SINGLE_LAYER_SOURCE"
@@ -211,17 +211,20 @@ _WARNING_TEMPLATES: list[tuple[re.Pattern[str], WarningCode]] = [
     (_t(r"solid internal energy mapped to element_solid_history_variables"), WarningCode.SOLID_INTERNAL_ENERGY_HISTVAR),
     (_t(r"shell (?:stress|strain) in element-local coordinates"), WarningCode.SHELL_LOCAL_FRAME),
     (_t(r"shell stress from 2DELEM_Stress_\(membrane\) — single layer, element-local coordinates"), WarningCode.SHELL_LOCAL_FRAME),
-    (_t(r"shell strain from 2DELEM_Strain_\(membrane\) — single layer"), WarningCode.SHELL_LOCAL_FRAME),
+    (_t(r"shell strain from 2DELEM_Strain_\(membrane\) — single layer .*shell strain in element-local coordinates"), WarningCode.SHELL_LOCAL_FRAME),
     (_t(r"only 2DELEM_Stress_\((?:upper|lower)\) found .*, element-local coordinates$"), WarningCode.SHELL_LOCAL_FRAME),
-    (_t(r"only 2DELEM_Strain_\((?:upper|lower)\) found "), WarningCode.SHELL_LOCAL_FRAME),
+    (_t(r"only 2DELEM_Strain_\((?:upper|lower)\) found .*shell strain in element-local coordinates"), WarningCode.SHELL_LOCAL_FRAME),
     (_t(r"only 2DELEM_Plastic_Strain_(?:Upper|Lower) found "), WarningCode.SINGLE_LAYER_SOURCE),
     (_t(r"2DELEM_Strain_\(membrane\) ignored because "), WarningCode.STRAIN_MEMBRANE_IGNORED),
     (_t(r"shell element results have differing integration layer counts"), WarningCode.LAYER_MISMATCH),
-    # --- shell stress rotation (--rotate-shell-stress) --------------------------
-    (_t(r"shell stress rotated (?:from the element frame|with the OpenRadioss local frame)"), WarningCode.SHELL_STRESS_ROTATED),
-    (_t(r"shell stress from 2DELEM_Stress_\(membrane\) — single layer, rotated from "), WarningCode.SHELL_STRESS_ROTATED),
-    (_t(r"only 2DELEM_Stress_\((?:upper|lower)\) found .*, rotated from the element frame"), WarningCode.SHELL_STRESS_ROTATED),
+    # --- shell stress / strain rotation (--rotate-shell-stress) ----------------
+    (_t(r"shell (?:stress|strain|stress and strain) rotated (?:from the element frame|with the OpenRadioss local frame)"), WarningCode.SHELL_ROTATED),
+    (_t(r"shell stress from 2DELEM_Stress_\(membrane\) — single layer, rotated from "), WarningCode.SHELL_ROTATED),
+    (_t(r"only 2DELEM_Stress_\((?:upper|lower)\) found .*, rotated from the element frame"), WarningCode.SHELL_ROTATED),
+    (_t(r"shell strain from 2DELEM_Strain_\(membrane\) — single layer .*shell strain rotated from the element frame"), WarningCode.SHELL_ROTATED),
+    (_t(r"only 2DELEM_Strain_\((?:upper|lower)\) found .*shell strain rotated from the element frame"), WarningCode.SHELL_ROTATED),
     (_t(r"rotate_shell_stress ignored: "), WarningCode.ROTATION_IGNORED),
+    (_t(r"rotate_shell_stress: the shell stress is synthetic-uniaxial "), WarningCode.ROTATION_IGNORED),
     (_t(r"\d+ shells have a degenerate local frame "), WarningCode.DEGENERATE_SHELL_FRAMES),
     # --- element deletion (is_alive) -------------------------------------------
     (_t(r"both OFF and EROSION_STATUS present; "), WarningCode.ALIVE_SOURCE),
