@@ -284,12 +284,16 @@ def _check_identity(state0: VtkState, state: VtkState, fname0: str, fname: str) 
 
 
 def _detect_dialect(state0: VtkState, own_time0: float | None) -> str:
-    # own_time0 is the file's own time, before any PVD manifest override:
-    # dialect is provenance of the file content.
+    # Dialect is provenance of the file content (plan.md design decision 7):
+    # a pyradioss title -> "port"; a FIELD TIME (legacy FIELD TIME, VTU
+    # FieldData TimeValue / TIME) -> "official"; anything else -> "unknown". A
+    # time from a non-pyradioss title "t=...", a VTU PointData TIME or only a
+    # PVD manifest timestep is not a FIELD TIME. own_time0 is the file's own
+    # time, before any PVD manifest override.
     title0 = getattr(state0, "title", "")
     if re.search(r"pyradioss", title0, re.IGNORECASE):
         return "port"
-    if own_time0 is not None:
+    if own_time0 is not None and getattr(state0, "time_source", None) == "field":
         return "official"
     return "unknown"
 

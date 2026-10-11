@@ -1,4 +1,5 @@
 import base64
+import binascii
 import lzma
 import re
 import xml.etree.ElementTree as ET
@@ -22,6 +23,10 @@ class VtkState:
     cell_offsets: np.ndarray  # (n_cells+1,) int32, start offset per cell
     point_data: dict[str, np.ndarray] = field(default_factory=dict)
     cell_data: dict[str, np.ndarray] = field(default_factory=dict)
+    # Where ``time`` came from: "field" (legacy FIELD TIME, VTU FieldData
+    # TimeValue / TIME), "title" (legacy title "t=..."), "point_data" (VTU
+    # PointData TIME) or None (no time in the file).
+    time_source: str | None = None
 
     def get_cell(self, i: int) -> np.ndarray:
         """Return the 0-based node indices for cell *i*."""
@@ -56,6 +61,7 @@ def _skip_tokens(
     lines: Iterator[str],
     count: int,
     initial_tokens: list[str] | None = None,
+    filepath: str | None = None,
 ) -> None:
     idx = 0
     if initial_tokens:
@@ -70,6 +76,10 @@ def _skip_tokens(
         if not tokens:
             continue
         idx += min(len(tokens), count - idx)
+
+    if idx < count:
+        file_ctx = f" in file '{filepath}'" if filepath else ""
+        raise ValueError(f"Expected {count} tokens, got {idx}{file_ctx}")
 
 
 def _read_numeric_block(
@@ -178,6 +188,13 @@ _LEGACY_DTYPES = {
     "unsigned_int": np.int64,
     "long": np.int64,
     "unsigned_long": np.int64,
+    # sized names of legacy 5.1 files (meshio 5 writes vtktypeint8..vtktypeint64)
+    "vtktypeint8": np.int32,
+    "vtktypeuint8": np.int32,
+    "vtktypeint16": np.int32,
+    "vtktypeuint16": np.int32,
+    "vtktypeint32": np.int32,
+    "vtktypeuint32": np.int64,
     "vtktypeint64": np.int64,
     "vtktypeuint64": np.int64,
     "vtkidtype": np.int64,
@@ -334,6 +351,17 @@ class _VtuDecoder:
             start += csize
         return b"".join(parts)
 
+    def _b64(self, text, name: str) -> bytes:
+        """Decode base64 text; invalid / cut-off base64 is a ValueError naming the file."""
+        if isinstance(text, str):
+            text = text.encode("ascii", "replace")
+        try:
+            return _b64decode_concat(text)
+        except binascii.Error as exc:
+            raise ValueError(
+                f"Invalid base64 data for DataArray '{name}' in file '{self.path}': {exc}"
+            ) from exc
+
     def decode(self, elem) -> np.ndarray:
         name = elem.attrib.get("Name", "")
         type_str = elem.attrib.get("type", "Float64")
@@ -349,7 +377,7 @@ class _VtuDecoder:
             arr = np.fromstring(elem.text or "", sep=" ", dtype=dt)
         else:
             if fmt == "binary":
-                data = self._payload(_b64decode_concat((elem.text or "").encode("ascii")), 0, name)
+                data = self._payload(self._b64(elem.text or "", name), 0, name)
             elif fmt == "appended":
                 if self.data_start < 0:
                     raise ValueError(
@@ -364,7 +392,7 @@ class _VtuDecoder:
                     later = [o for o in self.offsets if o > offset]
                     end = self.data_start + later[0] if later else self.data_end
                     text = self.mm[self.data_start + offset : end]
-                    data = self._payload(_b64decode_concat(text), 0, name)
+                    data = self._payload(self._b64(text, name), 0, name)
                 else:
                     raise ValueError(
                         f"Unknown appended encoding {self.encoding} in file '{self.path}'"
@@ -451,12 +479,14 @@ def _read_vtu_tree(path: str, root, dec: _VtuDecoder, metadata_only: bool) -> Vt
 
     # Time: dataset FieldData TimeValue / TIME (VTK / ParaView convention) first.
     time_val = None
+    time_source = None
     for fd in root.iter("FieldData"):
         for da in fd.findall("DataArray"):
             if time_val is None and da.attrib.get("Name", "").upper() in _VTU_TIME_FIELD_NAMES:
                 arr = dec.decode(da)
                 if arr.size > 0:
                     time_val = float(arr.flat[0])
+                    time_source = "field"
 
     pts_list, types_list, conn_list, offs_list = [], [], [], []
     pd_list: list[dict[str, np.ndarray]] = []
@@ -522,6 +552,7 @@ def _read_vtu_tree(path: str, root, dec: _VtuDecoder, metadata_only: bool) -> Vt
         for name, arr in point_data.items():
             if name.upper() == "TIME" and arr.size > 0:
                 time_val = float(arr.flat[0])
+                time_source = "point_data"
 
     return VtkState(
         path=path,
@@ -533,7 +564,194 @@ def _read_vtu_tree(path: str, root, dec: _VtuDecoder, metadata_only: bool) -> Vt
         cell_offsets=cell_offsets,
         point_data=point_data,
         cell_data=cell_data,
+        time_source=time_source,
     )
+
+
+# ---------------------------------------------------------------------------
+# Legacy (.vtk) reader helpers
+# ---------------------------------------------------------------------------
+
+
+class _LegacyLines:
+    """Line source of a legacy VTK file.
+
+    Iteration yields the non-blank lines, stripped: blank lines are never
+    semantic in the data sections (plan.md design decision 6). ``push_back``
+    returns a peeked line. ``next_raw`` returns the next line INCLUDING blank
+    ones ('' for a blank line, None at end of file): only the METADATA block
+    grammar needs them.
+    """
+
+    def __init__(self, f):
+        self._f = f
+        self._back: list[str] = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        if self._back:
+            return self._back.pop()
+        for line in self._f:
+            line = line.strip()
+            if line:
+                return line
+        raise StopIteration
+
+    def push_back(self, line: str) -> None:
+        self._back.append(line)
+
+    def next_raw(self) -> str | None:
+        if self._back:
+            return self._back.pop()
+        line = next(self._f, None)
+        return None if line is None else line.strip()
+
+
+# First words of legacy sections. A METADATA block whose closing blank line is
+# missing ends before such a line instead of swallowing the section.
+_LEGACY_SECTION_WORDS = frozenset(
+    {
+        "DATASET",
+        "POINTS",
+        "CELLS",
+        "OFFSETS",
+        "CONNECTIVITY",
+        "CELL_TYPES",
+        "POINT_DATA",
+        "CELL_DATA",
+        "FIELD",
+        "SCALARS",
+        "COLOR_SCALARS",
+        "LOOKUP_TABLE",
+        "VECTORS",
+        "NORMALS",
+        "TEXTURE_COORDINATES",
+        "TENSORS",
+        "GLOBAL_IDS",
+        "PEDIGREE_IDS",
+    }
+)
+
+
+def _skip_metadata(lines: _LegacyLines, ncomp: int) -> None:
+    """Skip the METADATA block VTK >= 8 writes after an array, if there is one.
+
+    Grammar (vtkDataWriter::WriteArray / vtkDataReader::ReadArray): a line
+    ``METADATA``; optionally ``COMPONENT_NAMES`` and one encoded name per
+    component, each on its own line (a missing name is an empty line, so the
+    names are skipped by count); optionally ``INFORMATION <nkeys>`` with per key
+    a ``NAME <key> LOCATION <loc>`` line and its ``DATA ...`` line(s); then a
+    blank line, which ends the block.
+    """
+    nxt = next(lines, None)
+    if nxt is None:
+        return
+    if nxt.split()[0].upper() != "METADATA":
+        lines.push_back(nxt)
+        return
+    while True:
+        raw = lines.next_raw()
+        if not raw:  # the closing blank line, or end of file
+            return
+        word = raw.split()[0].upper()
+        if word == "COMPONENT_NAMES":
+            for _ in range(ncomp):
+                if lines.next_raw() is None:
+                    return
+        elif word in _LEGACY_SECTION_WORDS:
+            lines.push_back(raw)
+            return
+
+
+def _count(tokens: list[str], i: int, what: str, path: str) -> int:
+    """Non-negative integer field *i* of a legacy header line, else ValueError naming the file."""
+    line = " ".join(tokens)
+    if len(tokens) <= i:
+        raise ValueError(f"Malformed {what} line {line!r} in file '{path}': missing field {i + 1}")
+    try:
+        n = int(tokens[i])
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise ValueError(
+            f"Malformed {what} line {line!r} in file '{path}': "
+            f"{tokens[i]!r} is not a non-negative integer"
+        )
+    return n
+
+
+def _word(tokens: list[str], i: int, what: str, path: str) -> str:
+    """Field *i* of a legacy header line, else ValueError naming the file."""
+    if len(tokens) <= i:
+        raise ValueError(
+            f"Malformed {what} line {' '.join(tokens)!r} in file '{path}': missing field {i + 1}"
+        )
+    return tokens[i]
+
+
+def _read_cells_legacy(lines, n_cells: int, size: int, initial: list[str], path: str):
+    """``CELLS n size`` followed by rows ``npts i0 i1 ...`` (legacy <= 4.2 layout)."""
+    arr = _read_numeric_block(lines, size, dtype=np.int32, filepath=path, initial_tokens=initial)
+    offsets = np.zeros(n_cells + 1, dtype=np.int64)
+    starts = np.zeros(n_cells, dtype=np.int64)
+    idx = 0
+    for c in range(n_cells):
+        npts = int(arr[idx]) if idx < size else -1
+        if npts < 0 or idx + 1 + npts > size:
+            raise ValueError(
+                f"CELLS row {c} (of {n_cells}) does not fit in the declared size {size} "
+                f"in file '{path}'"
+            )
+        starts[c] = idx + 1
+        offsets[c + 1] = offsets[c] + npts
+        idx += 1 + npts
+    if idx != size:
+        raise ValueError(
+            f"CELLS declares size {size} but its {n_cells} rows use {idx} values in file '{path}'"
+        )
+    # every value except the per-row counts is connectivity
+    is_conn = np.ones(size, dtype=bool)
+    is_conn[starts - 1] = False
+    return arr[is_conn].astype(np.int32), offsets.astype(np.int32)
+
+
+def _read_cells_51(lines, offsets_line: str, n_offsets: int, n_conn: int, path: str):
+    """``CELLS n_offsets n_conn`` + ``OFFSETS <type>`` + ``CONNECTIVITY <type>`` (legacy 5.1).
+
+    Written by vtkDataWriter::WriteCells (VTK 9) and meshio 5; each of the two
+    arrays may be followed by a METADATA block.
+    """
+    otoks = offsets_line.split()
+    _legacy_dtype(_word(otoks, 1, "OFFSETS", path), path)
+    if n_offsets < 1:
+        raise ValueError(
+            f"CELLS of a legacy 5.1 file must have at least 1 offset, got {n_offsets}, "
+            f"in file '{path}'"
+        )
+    offsets = _read_numeric_block(
+        lines, n_offsets, dtype=np.int64, filepath=path, initial_tokens=otoks[2:]
+    )
+    _skip_metadata(lines, 1)
+    cline = next(lines, None)
+    ctoks = cline.split() if cline is not None else []
+    if not ctoks or ctoks[0].upper() != "CONNECTIVITY":
+        raise ValueError(
+            f"Expected CONNECTIVITY after the OFFSETS of a legacy 5.1 CELLS block, got "
+            f"{cline!r}, in file '{path}'"
+        )
+    _legacy_dtype(_word(ctoks, 1, "CONNECTIVITY", path), path)
+    conn = _read_numeric_block(
+        lines, n_conn, dtype=np.int64, filepath=path, initial_tokens=ctoks[2:]
+    )
+    _skip_metadata(lines, 1)
+    if offsets[0] != 0 or offsets[-1] != n_conn or np.any(np.diff(offsets) < 0):
+        raise ValueError(
+            f"Invalid legacy 5.1 OFFSETS in file '{path}': they must start at 0, never "
+            f"decrease and end at the CONNECTIVITY size {n_conn}"
+        )
+    return conn.astype(np.int32), offsets.astype(np.int32)
 
 
 def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
@@ -548,23 +766,16 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
             return read_vtu(path, metadata_only=metadata_only)
 
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # global skip for blank lines
-        def non_blank_lines():
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield line
-
-        lines = non_blank_lines()
+        # blank lines are skipped globally (except inside METADATA blocks)
+        lines = _LegacyLines(f)
 
         # Line 1: # vtk DataFile Version X.Y
-        try:
-            line1 = next(lines)
-        except StopIteration:
-            raise ValueError("Empty file")
+        line1 = next(lines, None)
+        if line1 is None:
+            raise ValueError(f"Empty file '{path}'")
 
         if not line1.lower().startswith("# vtk datafile version"):
-            raise ValueError(f"Invalid VTK header: {line1}")
+            raise ValueError(f"Invalid VTK header: {line1!r} in file '{path}'")
 
         # Line 2: Title. Read straight from the file: it may be empty, and the
         # blank-skipping iterator would then take line 3 ('ASCII') as title.
@@ -581,12 +792,12 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
         if line3 is None:
             raise ValueError(f"Truncated VTK file '{path}': missing format line after the title")
         if not line3.upper().startswith("ASCII"):
-            raise ValueError(f"Expected ASCII format, got: {line3}")
+            raise ValueError(f"Expected ASCII format, got: {line3!r} in file '{path}'")
 
         # Line 4: DATASET UNSTRUCTURED_GRID
         line4 = next(lines, "")
         if not line4.upper().startswith("DATASET UNSTRUCTURED_GRID"):
-            raise ValueError(f"Expected DATASET UNSTRUCTURED_GRID, got: {line4}")
+            raise ValueError(f"Expected DATASET UNSTRUCTURED_GRID, got: {line4!r} in file '{path}'")
 
         points = np.zeros((0, 3), dtype=np.float64)
         cell_connectivity = np.zeros(0, dtype=np.int32)
@@ -600,9 +811,6 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
 
         for line in lines:
             tokens = line.split()
-            if not tokens:
-                continue
-
             cmd = tokens[0].upper()
 
             if cmd == "FIELD":
@@ -610,13 +818,19 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                 # CELL_DATA) only TIME is used; inside POINT_DATA / CELL_DATA
                 # every array is a point / cell array (meshio writes all its
                 # data this way).
-                num_fields = int(tokens[2])
-                for _ in range(num_fields):
-                    header = next(lines).split()
+                num_fields = _count(tokens, 2, "FIELD", path)
+                for k in range(num_fields):
+                    header_line = next(lines, None)
+                    if header_line is None:
+                        raise ValueError(
+                            f"Truncated VTK file '{path}': FIELD {tokens[1]} ends after "
+                            f"{k} of {num_fields} arrays"
+                        )
+                    header = header_line.split()
                     name = header[0]
-                    ncomp = int(header[1])
-                    ntuples = int(header[2])
-                    val_type = header[3]
+                    ncomp = _count(header, 1, "FIELD array", path)
+                    ntuples = _count(header, 2, "FIELD array", path)
+                    val_type = _word(header, 3, "FIELD array", path)
 
                     num_vals = ncomp * ntuples
                     is_time = name.upper() == "TIME"
@@ -626,15 +840,20 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                             f"POINT_DATA / CELL_DATA has {current_n}, in file '{path}'"
                         )
                     if metadata_only and not _keep_in_metadata(name):
-                        _skip_tokens(lines, num_vals, initial_tokens=header[4:])
+                        _skip_tokens(lines, num_vals, initial_tokens=header[4:], filepath=path)
                     elif current_data_dict is None or ntuples != current_n:
                         # dataset-level FIELD (official dialect TIME / CYCLE),
                         # or a 1-value TIME inside POINT_DATA: time only
                         vals = _read_tokens(
                             lines, num_vals, filepath=path, initial_tokens=header[4:]
                         )
-                        if name.upper() == "TIME" and num_vals > 0:
-                            field_time = float(vals[0])
+                        if is_time and num_vals > 0:
+                            try:
+                                field_time = float(vals[0])
+                            except ValueError:
+                                raise ValueError(
+                                    f"Malformed TIME value {vals[0]!r} in file '{path}'"
+                                ) from None
                     elif val_type.lower() in _LEGACY_STRING_TYPES:
                         # vtkDataWriter writes one encoded word per string value.
                         # A string array has no d3plot field; keep it so the
@@ -655,15 +874,16 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                             filepath=path,
                             initial_tokens=header[4:],
                         )
-                        if name.upper() == "TIME" and num_vals > 0:
+                        if is_time and num_vals > 0:
                             field_time = float(arr[0])
                         current_data_dict[name] = _as_tensor_if_9(
                             arr.reshape((ntuples, ncomp)) if ncomp > 1 else arr
                         )
+                    _skip_metadata(lines, ncomp)
             elif cmd == "POINTS":
-                n_points = int(tokens[1])
+                n_points = _count(tokens, 1, "POINTS", path)
                 if metadata_only:
-                    _skip_tokens(lines, n_points * 3, initial_tokens=tokens[3:])
+                    _skip_tokens(lines, n_points * 3, initial_tokens=tokens[3:], filepath=path)
                     points = np.zeros((n_points, 3), dtype=np.float64)
                 else:
                     arr = _read_numeric_block(
@@ -674,55 +894,47 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                         initial_tokens=tokens[3:],
                     )
                     points = arr.reshape((n_points, 3))
+                _skip_metadata(lines, 3)
             elif cmd == "CELLS":
-                n_cells = int(tokens[1])
-                size = int(tokens[2])
-                arr = _read_numeric_block(
-                    lines, size, dtype=np.int32, filepath=path, initial_tokens=tokens[3:]
-                )
-
-                # Build flat connectivity + offsets from npts idx0 idx1 ...
-                offsets_list = [0]
-                conn_parts = []
-                idx = 0
-                for _ in range(n_cells):
-                    npts = int(arr[idx])
-                    conn_parts.append(arr[idx + 1 : idx + 1 + npts])
-                    offsets_list.append(offsets_list[-1] + npts)
-                    idx += 1 + npts
-                cell_connectivity = (
-                    np.concatenate(conn_parts) if conn_parts else np.zeros(0, dtype=np.int32)
-                )
-                cell_offsets = np.array(offsets_list, dtype=np.int32)
+                n_first = _count(tokens, 1, "CELLS", path)
+                size = _count(tokens, 2, "CELLS", path)
+                nxt = next(lines, None) if len(tokens) == 3 else None
+                if nxt is not None and nxt.split()[0].upper() == "OFFSETS":
+                    # legacy 5.1: CELLS <n_offsets> <n_connectivity>
+                    cell_connectivity, cell_offsets = _read_cells_51(
+                        lines, nxt, n_first, size, path
+                    )
+                else:
+                    if nxt is not None:
+                        lines.push_back(nxt)
+                    cell_connectivity, cell_offsets = _read_cells_legacy(
+                        lines, n_first, size, tokens[3:], path
+                    )
             elif cmd == "CELL_TYPES":
-                n_cells = int(tokens[1])
+                n_cells = _count(tokens, 1, "CELL_TYPES", path)
                 cell_types = _read_numeric_block(
                     lines, n_cells, dtype=np.int32, filepath=path, initial_tokens=tokens[2:]
                 )
             elif cmd == "POINT_DATA":
-                current_n = int(tokens[1])
+                current_n = _count(tokens, 1, "POINT_DATA", path)
                 current_data_dict = point_data
             elif cmd == "CELL_DATA":
-                current_n = int(tokens[1])
+                current_n = _count(tokens, 1, "CELL_DATA", path)
                 current_data_dict = cell_data
             elif cmd == "SCALARS":
                 if current_data_dict is None:
                     continue
-                name = tokens[1]
-                dtype = _legacy_dtype(tokens[2], path)
+                name = _word(tokens, 1, "SCALARS", path)
+                dtype = _legacy_dtype(_word(tokens, 2, "SCALARS", path), path)
                 tokens_upper = [t.upper() for t in tokens]
                 if "LOOKUP_TABLE" in tokens_upper:
                     idx = tokens_upper.index("LOOKUP_TABLE")
-                    ncomp = int(tokens[3]) if idx > 3 else 1
+                    ncomp = _count(tokens, 3, "SCALARS", path) if idx > 3 else 1
                     initial_tokens = tokens[idx + 2 :]
                 else:
-                    ncomp = int(tokens[3]) if len(tokens) > 3 else 1
+                    ncomp = _count(tokens, 3, "SCALARS", path) if len(tokens) > 3 else 1
                     initial_tokens = tokens[4:] if len(tokens) > 3 else tokens[3:]
-                    try:
-                        peek_line = next(lines)
-                    except StopIteration:
-                        peek_line = ""
-
+                    peek_line = next(lines, "")
                     if peek_line.upper().startswith("LOOKUP_TABLE"):
                         initial_tokens.extend(peek_line.split()[2:])
                     else:
@@ -730,7 +942,7 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
 
                 num_vals = current_n * ncomp
                 if metadata_only and not _keep_in_metadata(name):
-                    _skip_tokens(lines, num_vals, initial_tokens=initial_tokens)
+                    _skip_tokens(lines, num_vals, initial_tokens=initial_tokens, filepath=path)
                 else:
                     arr = _read_numeric_block(
                         lines, num_vals, dtype=dtype, filepath=path, initial_tokens=initial_tokens
@@ -738,41 +950,45 @@ def read_vtk(path: str | Path, metadata_only: bool = False) -> VtkState:
                     if ncomp > 1:
                         arr = arr.reshape((current_n, ncomp))
                     current_data_dict[name] = arr
-            elif cmd == "VECTORS":
+                _skip_metadata(lines, ncomp)
+            elif cmd in ("VECTORS", "TENSORS"):
                 if current_data_dict is None:
                     continue
-                name = tokens[1]
-                dtype = _legacy_dtype(tokens[2], path)
-                num_vals = current_n * 3
+                name = _word(tokens, 1, cmd, path)
+                dtype = _legacy_dtype(_word(tokens, 2, cmd, path), path)
+                ncomp = 3 if cmd == "VECTORS" else 9
+                num_vals = current_n * ncomp
                 if metadata_only and not _keep_in_metadata(name):
-                    _skip_tokens(lines, num_vals, initial_tokens=tokens[3:])
+                    _skip_tokens(lines, num_vals, initial_tokens=tokens[3:], filepath=path)
                 else:
                     arr = _read_numeric_block(
                         lines, num_vals, dtype=dtype, filepath=path, initial_tokens=tokens[3:]
                     )
-                    current_data_dict[name] = arr.reshape((current_n, 3))
-            elif cmd == "TENSORS":
-                if current_data_dict is None:
-                    continue
-                name = tokens[1]
-                dtype = _legacy_dtype(tokens[2], path)
-                num_vals = current_n * 9
-                if metadata_only and not _keep_in_metadata(name):
-                    _skip_tokens(lines, num_vals, initial_tokens=tokens[3:])
-                else:
-                    arr = _read_numeric_block(
-                        lines, num_vals, dtype=dtype, filepath=path, initial_tokens=tokens[3:]
-                    )
-                    current_data_dict[name] = arr.reshape((current_n, 3, 3))
+                    shape = (current_n, 3) if cmd == "VECTORS" else (current_n, 3, 3)
+                    current_data_dict[name] = arr.reshape(shape)
+                _skip_metadata(lines, ncomp)
 
+        if len(cell_types) != len(cell_offsets) - 1:
+            raise ValueError(
+                f"CELLS has {len(cell_offsets) - 1} cells but CELL_TYPES has {len(cell_types)} "
+                f"in file '{path}'"
+            )
+
+        if field_time is not None:
+            time, time_source = field_time, "field"
+        elif title_time is not None:
+            time, time_source = title_time, "title"
+        else:
+            time, time_source = None, None
         return VtkState(
             path=path,
             title=title,
-            time=field_time if field_time is not None else title_time,
+            time=time,
             points=points,
             cell_types=cell_types,
             cell_connectivity=cell_connectivity,
             cell_offsets=cell_offsets,
             point_data=point_data,
             cell_data=cell_data,
+            time_source=time_source,
         )
